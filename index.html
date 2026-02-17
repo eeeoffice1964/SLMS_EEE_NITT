@@ -3904,23 +3904,69 @@ async function showStudentLeaveHistory() {
       </div>
     `;
     
-    // Query leave applications for this student
+    // Query leave applications for this student - CASE SENSITIVE CHECK
     console.log('Fetching leave history for student ID:', student.ID);
+    console.log('Student ID type:', typeof student.ID);
+    console.log('Student ID value:', student.ID);
     
+    // Get all leave applications
+    const allAppsSnapshot = await db.collection('leaveApplications').get();
+    console.log('Total applications in system:', allAppsSnapshot.size);
+    
+    // Log all student IDs in applications for debugging
+    const allStudentIds = [];
+    allAppsSnapshot.docs.forEach(doc => {
+      const data = doc.data();
+      if (data.StudentID) {
+        allStudentIds.push(data.StudentID);
+      }
+    });
+    console.log('All Student IDs in applications:', [...new Set(allStudentIds)]);
+    
+    // Query with proper filtering - using where clause
     const applicationsSnapshot = await db.collection('leaveApplications')
       .where('StudentID', '==', student.ID)
-      .orderBy('AppliedDate', 'desc')
       .get();
     
-    console.log('Found applications:', applicationsSnapshot.size);
+    console.log('Found applications with where clause:', applicationsSnapshot.size);
     
-    const applications = applicationsSnapshot.docs.map(doc => {
-      const data = doc.data();
-      return {
-        id: doc.id,
-        ...data
-      };
+    // Also try a case-insensitive approach if needed
+    let applications = [];
+    
+    if (applicationsSnapshot.size > 0) {
+      // Use the where clause results
+      applications = applicationsSnapshot.docs.map(doc => {
+        const data = doc.data();
+        return {
+          id: doc.id,
+          ...data
+        };
+      });
+    } else {
+      // Fallback: manual filtering (case-insensitive)
+      console.log('No exact matches, trying case-insensitive search...');
+      const allDocs = allAppsSnapshot.docs.map(doc => {
+        const data = doc.data();
+        return {
+          id: doc.id,
+          ...data
+        };
+      });
+      
+      // Filter manually (case-insensitive)
+      applications = allDocs.filter(app => 
+        app.StudentID && app.StudentID.toString().toLowerCase() === student.ID.toString().toLowerCase()
+      );
+      
+      console.log('Found applications with manual filtering:', applications.length);
+    }
+    
+    // Sort by applied date (newest first)
+    applications.sort((a, b) => {
+      return new Date(b.AppliedDate || 0) - new Date(a.AppliedDate || 0);
     });
+    
+    console.log('Final applications for student:', applications.length);
     
     // Build the HTML content
     let applicationsHTML = '';
@@ -3950,7 +3996,7 @@ async function showStudentLeaveHistory() {
                   <td>${formatDate(app.FromDate)}</td>
                   <td>${formatDate(app.ToDate)}</td>
                   <td><span class="badge badge-secondary">${app.NoOfDays || 0}</span></td>
-                  <td>${app.Reason ? app.Reason.substring(0, 30) + (app.Reason.length > 30 ? '...' : '') : 'N/A'}</td>
+                  <td>${app.Reason ? (app.Reason.length > 30 ? app.Reason.substring(0, 30) + '...' : app.Reason) : 'N/A'}</td>
                   <td>
                     <span class="badge ${app.Status === 'approved' ? 'badge-success' : app.Status === 'rejected' ? 'badge-danger' : 'badge-warning'}">
                       ${(app.Status || 'pending').toUpperCase()}
@@ -3974,7 +4020,11 @@ async function showStudentLeaveHistory() {
           <i class="fas fa-calendar-times" style="font-size: 3rem; margin-bottom: 15px;"></i>
           <h3>No Leave Applications Found</h3>
           <p>You haven't submitted any leave applications yet.</p>
-          <p>Contact your administrator if you need to apply for leave.</p>
+          <p>If an admin has entered a leave for you, please contact them to verify the Student ID.</p>
+          <div style="margin-top: 20px; padding: 15px; background: #f8f9fa; border-radius: 8px;">
+            <p><strong>Your Student ID:</strong> ${student.ID}</p>
+            <p><small>Make sure this matches the Student ID used by admin when entering leaves.</small></p>
+          </div>
         </div>
       `;
     }
@@ -3989,7 +4039,7 @@ async function showStudentLeaveHistory() {
       <div class="card">
         <div class="card-header">
           <h2><i class="fas fa-history"></i> My Leave History</h2>
-          <div>
+          <div style="display: flex; gap: 5px; flex-wrap: wrap;">
             <span class="badge badge-info">Total: ${totalLeaves}</span>
             <span class="badge badge-success">Approved: ${approvedLeaves}</span>
             <span class="badge badge-warning">Pending: ${pendingLeaves}</span>
@@ -4036,98 +4086,108 @@ async function showStudentLeaveHistory() {
   }
 }
 
-// Add function to view application details for student
-async function viewStudentApplicationDetails(applicationId) {
+// Also update the leave entry form to ensure StudentID is stored correctly
+async function submitLeaveRequest(event) {
+  event.preventDefault();
+  
+  const fromDate = document.getElementById('leaveFromDate').value;
+  const toDate = document.getElementById('leaveToDate').value;
+  
+  // Generate application ID with proper format
+  const appIdInfo = await generateApplicationId();
+  
+  // Get the student ID - make sure it's stored as string
+  const studentId = document.getElementById('leaveStudentId').value.trim();
+  
+  if (!studentId) {
+    showAlert('Please select a student', 'warning');
+    return;
+  }
+  
+  const applicationData = {
+    ID: appIdInfo.id,
+    Year: appIdInfo.year,
+    SequenceNumber: appIdInfo.sequence,
+    StudentID: studentId, // Store as string
+    StudentID_original: studentId, // Keep original for debugging
+    LeaveType: document.getElementById('leaveType').value,
+    FromDate: fromDate,
+    ToDate: toDate,
+    NoOfDays: parseInt(document.getElementById('leaveNoOfDays').value) || 1,
+    Reason: document.getElementById('leaveReason').value,
+    Status: document.getElementById('leaveStatus').value,
+    AppliedDate: new Date().toISOString(),
+    AppliedBy: currentUser?.email || 'admin',
+    Semester: document.getElementById('selectedStudentSemester').textContent !== '-' ? document.getElementById('selectedStudentSemester').textContent : '',
+    createdAt: new Date().toISOString()
+  };
+  
+  if (!applicationData.LeaveType) {
+    showAlert('Please select a leave type', 'warning');
+    return;
+  }
+  
+  if (!applicationData.FromDate || !applicationData.ToDate) {
+    showAlert('Please select valid dates', 'warning');
+    return;
+  }
+  
+  const submitBtn = document.getElementById('submitLeaveBtn');
+  const originalText = submitBtn.innerHTML;
+  submitBtn.innerHTML = '<div class="loading-spinner"></div> Submitting...';
+  submitBtn.disabled = true;
+  
   try {
     const db = firebase.firestore();
     
-    const appDoc = await db.collection('leaveApplications').doc(applicationId).get();
-    if (!appDoc.exists) {
-      showAlert('Application not found', 'danger');
-      return;
+    // Double-check for duplicate Application ID (safety check)
+    const existingIdSnapshot = await db.collection('leaveApplications').where('ID', '==', applicationData.ID).get();
+    if (!existingIdSnapshot.empty) {
+      // If somehow duplicate, regenerate with next available sequence
+      console.warn('Duplicate Application ID detected, regenerating...');
+      
+      // Get the highest sequence number for current year
+      const allAppsSnapshot = await db.collection('leaveApplications')
+        .where('Year', '==', appIdInfo.year)
+        .orderBy('SequenceNumber', 'desc')
+        .limit(1)
+        .get();
+      
+      let maxSequence = 0;
+      if (!allAppsSnapshot.empty) {
+        maxSequence = allAppsSnapshot.docs[0].data().SequenceNumber || 0;
+      }
+      
+      const newSequence = maxSequence + 1;
+      const newFormattedSequence = newSequence.toString().padStart(4, '0');
+      applicationData.ID = `LA-${appIdInfo.year}-${newFormattedSequence}`;
+      applicationData.SequenceNumber = newSequence;
     }
     
-    const app = { id: appDoc.id, ...appDoc.data() };
+    // Add the application
+    await db.collection('leaveApplications').add(applicationData);
     
-    const modal = document.getElementById('operationModal');
-    modal.innerHTML = `
-      <div class="modal-content">
-        <div class="close-modal" onclick="closeModal()">&times;</div>
-        <h2><i class="fas fa-info-circle"></i> Application Details</h2>
-        <div style="padding: 20px; background: #f8f9fa; border-radius: 8px; margin: 20px 0;">
-          <h3 style="margin-bottom: 15px;">Application ID: ${app.ID}</h3>
-          
-          <div class="student-info-row">
-            <div class="info-item">
-              <span class="info-label">Leave Type:</span>
-              <span class="info-value">${app.LeaveType || 'N/A'}</span>
-            </div>
-            <div class="info-item">
-              <span class="info-label">Status:</span>
-              <span class="info-value badge ${app.Status === 'approved' ? 'badge-success' : app.Status === 'rejected' ? 'badge-danger' : 'badge-warning'}">
-                ${(app.Status || 'pending').toUpperCase()}
-              </span>
-            </div>
-          </div>
-          
-          <div class="student-info-row">
-            <div class="info-item">
-              <span class="info-label">From Date:</span>
-              <span class="info-value">${formatDate(app.FromDate)}</span>
-            </div>
-            <div class="info-item">
-              <span class="info-label">To Date:</span>
-              <span class="info-value">${formatDate(app.ToDate)}</span>
-            </div>
-            <div class="info-item">
-              <span class="info-label">Number of Days:</span>
-              <span class="info-value">${app.NoOfDays || 0}</span>
-            </div>
-          </div>
-          
-          <div class="student-info-row">
-            <div class="info-item">
-              <span class="info-label">Applied Date:</span>
-              <span class="info-value">${formatDate(app.AppliedDate)}</span>
-            </div>
-            <div class="info-item">
-              <span class="info-label">Semester:</span>
-              <span class="info-value">${app.Semester || 'N/A'}</span>
-            </div>
-          </div>
-          
-          <div style="margin-top: 15px;">
-            <strong>Reason:</strong>
-            <p style="background: white; padding: 10px; border-radius: 5px; margin-top: 5px;">${app.Reason || 'No reason provided'}</p>
-          </div>
-          
-          ${app.ApprovedDate ? `
-            <div style="margin-top: 15px;">
-              <strong>Approved/Rejected Date:</strong>
-              <p>${formatDate(app.ApprovedDate || app.RejectedDate)}</p>
-            </div>
-          ` : ''}
-          
-          ${app.ApprovedBy || app.RejectedBy ? `
-            <div style="margin-top: 15px;">
-              <strong>Processed By:</strong>
-              <p>${app.ApprovedBy || app.RejectedBy || 'N/A'}</p>
-            </div>
-          ` : ''}
-        </div>
-        
-        <div style="display: flex; gap: 10px;">
-          <button class="btn btn-secondary" onclick="closeModal()" style="flex: 1;">
-            Close
-          </button>
-        </div>
-      </div>
-    `;
-    modal.style.display = 'flex';
+    console.log('Leave application added with StudentID:', studentId);
+    
+    // If status is approved, send email notification
+    if (applicationData.Status === 'approved' && applicationData.StudentID) {
+      const studentSnapshot = await db.collection('students').where('ID', '==', applicationData.StudentID).get();
+      if (!studentSnapshot.empty) {
+        const student = studentSnapshot.docs[0].data();
+        await sendApprovalEmail(applicationData, student, 'approved');
+      }
+    }
+    
+    showAlert(`Leave request submitted successfully! (ID: ${applicationData.ID})`, 'success');
+    closeModal();
+    showLeaveApprovals();
     
   } catch (error) {
-    console.error('View application error:', error);
-    showAlert('Failed to load application details: ' + error.message, 'danger');
+    console.error('Submit leave request error:', error);
+    showAlert('Failed to submit leave request: ' + error.message, 'danger');
+  } finally {
+    submitBtn.innerHTML = originalText;
+    submitBtn.disabled = false;
   }
 }
     // ==================== STUDENTS MANAGEMENT FUNCTIONS ====================
