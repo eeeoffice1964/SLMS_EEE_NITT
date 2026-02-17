@@ -4237,298 +4237,704 @@ function doPost(e) {
       }
     }
 
-    // ==================== STUDENTS MANAGEMENT FUNCTIONS ====================
-    async function showStudentsManagement() {
-      try {
-        const db = firebase.firestore();
-        const studentsSnapshot = await db.collection('students').get();
-        const students = studentsSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+    // ==================== STUDENTS MANAGEMENT COMPLETE FIX ====================
+async function showStudentsManagement() {
+  try {
+    const db = firebase.firestore();
+    const studentsSnapshot = await db.collection('students').get();
+    const students = studentsSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+    
+    // Store in global variable for filtering
+    window.allStudents = students;
+    
+    // Clear selected students when loading new list
+    selectedStudents.clear();
+    
+    // Get unique values for filters
+    const uniqueCategories = [...new Set(students.map(s => s.Category).filter(Boolean))];
+    const uniqueYears = [...new Set(students.map(s => s.Year).filter(Boolean))];
+    const uniqueSemesters = [...new Set(students.map(s => s.Semester).filter(Boolean))];
+    const uniqueSpecializations = [...new Set(students.map(s => s.Specialization).filter(Boolean))];
+    
+    // Load saved filters
+    const savedFilters = loadFilterState('students');
+    currentFilters = { ...savedFilters };
+    
+    // Apply filters
+    const filteredStudents = filterStudents(students, currentFilters);
+    
+    const contentDiv = document.getElementById('adminMainContent');
+    contentDiv.innerHTML = `
+      <div class="card">
+        <div class="card-header">
+          <h2><i class="fas fa-user-graduate"></i> Students Management</h2>
+          <div style="display: flex; gap: 10px;">
+            <button class="btn btn-success" onclick="showAddStudentModal()">
+              <i class="fas fa-plus"></i> Add Student
+            </button>
+            <button class="btn btn-primary" onclick="showBulkUpdateModal()" ${filteredStudents.length === 0 ? 'disabled' : ''}>
+              <i class="fas fa-users"></i> Bulk Update
+            </button>
+          </div>
+        </div>
         
-        window.allStudents = students;
-        selectedStudents.clear();
+        <div class="filters-container">
+          <div class="filter-group search-box">
+            <label>Search</label>
+            <i class="fas fa-search"></i>
+            <input type="text" class="form-control" id="studentSearch" placeholder="Search by ID or Name..." 
+                   onkeyup="filterStudentList()" value="${currentFilters.search || ''}">
+          </div>
+          
+          <div class="filter-group">
+            <label>Category</label>
+            <select class="form-control" id="filterCategory" onchange="filterStudentList()">
+              <option value="">All Categories</option>
+              ${uniqueCategories.map(cat => `<option value="${cat}" ${currentFilters.category === cat ? 'selected' : ''}>${cat}</option>`).join('')}
+            </select>
+          </div>
+          
+          <div class="filter-group">
+            <label>Year</label>
+            <select class="form-control" id="filterYear" onchange="filterStudentList()">
+              <option value="">All Years</option>
+              ${uniqueYears.map(year => `<option value="${year}" ${currentFilters.year === year ? 'selected' : ''}>${year}</option>`).join('')}
+            </select>
+          </div>
+          
+          <div class="filter-group">
+            <label>Semester</label>
+            <select class="form-control" id="filterSemester" onchange="filterStudentList()">
+              <option value="">All Semesters</option>
+              ${uniqueSemesters.map(sem => `<option value="${sem}" ${currentFilters.semester === sem ? 'selected' : ''}>${sem}</option>`).join('')}
+            </select>
+          </div>
+          
+          <div class="filter-group">
+            <label>Specialization</label>
+            <select class="form-control" id="filterSpecialization" onchange="filterStudentList()">
+              <option value="">All Specializations</option>
+              ${uniqueSpecializations.map(spec => `<option value="${spec}" ${currentFilters.specialization === spec ? 'selected' : ''}>${spec}</option>`).join('')}
+            </select>
+          </div>
+        </div>
         
-        const uniqueCategories = [...new Set(students.map(s => s.Category).filter(Boolean))];
-        const uniqueYears = [...new Set(students.map(s => s.Year).filter(Boolean))];
-        const uniqueSemesters = [...new Set(students.map(s => s.Semester).filter(Boolean))];
-        const uniqueSpecializations = [...new Set(students.map(s => s.Specialization).filter(Boolean))];
+        <div class="alert alert-info" id="filterInfo" style="display: flex; justify-content: space-between; align-items: center;">
+          <div>
+            <i class="fas fa-info-circle"></i> 
+            Showing <strong id="showingCount">${filteredStudents.length}</strong> of <strong id="totalCount">${students.length}</strong> students
+          </div>
+          <div>
+            <button class="btn btn-sm btn-secondary" onclick="clearStudentFilters()">
+              <i class="fas fa-times"></i> Clear Filters
+            </button>
+          </div>
+        </div>
         
-        const savedFilters = loadFilterState('students');
-        currentFilters = { ...savedFilters };
-        
-        const filteredStudents = filterStudents(students, currentFilters);
-        
-        const contentDiv = document.getElementById('adminMainContent');
-        contentDiv.innerHTML = `
-          <div class="card">
-            <div class="card-header">
-              <h2><i class="fas fa-user-graduate"></i> Students Management</h2>
-              <div style="display: flex; gap: 10px;">
-                <button class="btn btn-success" onclick="showAddStudentModal()">
-                  <i class="fas fa-plus"></i> Add Student
-                </button>
-                <button class="btn btn-primary" onclick="showBulkYearChangeModal()" ${filteredStudents.length === 0 ? 'disabled' : ''}>
-                  <i class="fas fa-users"></i> Bulk Update
-                </button>
+        ${filteredStudents.length > 0 ? `
+          <div class="bulk-select-header" style="padding: 15px; background: #f0f7ff; border-radius: 8px; margin: 15px 0; border: 1px solid #cce5ff;">
+            <div style="display: flex; align-items: center; gap: 20px; flex-wrap: wrap;">
+              <div style="display: flex; align-items: center; gap: 10px;">
+                <input type="checkbox" id="selectAllStudents" class="bulk-select-checkbox" onchange="toggleSelectAllStudents(this.checked)" style="width: 18px; height: 18px;">
+                <label for="selectAllStudents" style="font-weight: 600; cursor: pointer;">Select All (${filteredStudents.length})</label>
               </div>
-            </div>
-            
-            <div class="filters-container">
-              <div class="filter-group search-box">
-                <label>Search</label>
-                <i class="fas fa-search"></i>
-                <input type="text" class="form-control" id="studentSearch" placeholder="Search by ID or Name..." 
-                       oninput="filterStudentList()" value="${currentFilters.search || ''}">
+              <div style="display: flex; align-items: center; gap: 10px; margin-left: auto;" id="selectedCountDisplay">
+                <span style="color: #666;">Selected:</span>
+                <span style="font-weight: 600; background: #3498db; color: white; padding: 2px 10px; border-radius: 20px;" id="selectedCount">0</span>
               </div>
-              
-              <div class="filter-group">
-                <label>Category</label>
-                <select class="form-control" id="filterCategory" onchange="filterStudentList()">
-                  <option value="">All Categories</option>
-                  ${uniqueCategories.map(cat => `<option value="${cat}" ${currentFilters.category === cat ? 'selected' : ''}>${cat}</option>`).join('')}
-                </select>
-              </div>
-              
-              <div class="filter-group">
-                <label>Year</label>
-                <select class="form-control" id="filterYear" onchange="filterStudentList()">
-                  <option value="">All Years</option>
-                  ${uniqueYears.map(year => `<option value="${year}" ${currentFilters.year === year ? 'selected' : ''}>${year}</option>`).join('')}
-                </select>
-              </div>
-              
-              <div class="filter-group">
-                <label>Semester</label>
-                <select class="form-control" id="filterSemester" onchange="filterStudentList()">
-                  <option value="">All Semesters</option>
-                  ${uniqueSemesters.map(sem => `<option value="${sem}" ${currentFilters.semester === sem ? 'selected' : ''}>${sem}</option>`).join('')}
-                </select>
-              </div>
-              
-              <div class="filter-group">
-                <label>Specialization</label>
-                <select class="form-control" id="filterSpecialization" onchange="filterStudentList()">
-                  <option value="">All Specializations</option>
-                  ${uniqueSpecializations.map(spec => `<option value="${spec}" ${currentFilters.specialization === spec ? 'selected' : ''}>${spec}</option>`).join('')}
-                </select>
-              </div>
-            </div>
-            
-            <div class="alert alert-info">
-              <i class="fas fa-info-circle"></i> 
-              Showing <strong>${filteredStudents.length}</strong> of <strong>${students.length}</strong> students
-              <button class="btn btn-sm btn-secondary" onclick="clearStudentFilters()" style="margin-left: 15px;">
-                <i class="fas fa-times"></i> Clear Filters
-              </button>
-            </div>
-            
-            ${filteredStudents.length > 0 ? `
-              <div class="bulk-select-header">
-                <input type="checkbox" id="selectAllStudents" class="bulk-select-checkbox" onchange="toggleSelectAllStudents(this.checked)">
-                <span>Select All</span>
-                <span style="margin-left: auto; color: #666;">
-                  Selected: <span id="selectedCount">0</span> students
-                </span>
-              </div>
-              
-              <div class="bulk-actions" id="bulkActions" style="display: none;">
-                <button class="btn btn-sm btn-primary" onclick="showBulkYearChangeForSelected()">
-                  <i class="fas fa-exchange-alt"></i> Update Selected
-                </button>
-                <button class="btn btn-sm btn-danger" onclick="deleteSelectedStudents()">
-                  <i class="fas fa-trash"></i> Delete Selected
-                </button>
-              </div>
-            ` : ''}
-            
-            <div class="table-container">
-              ${renderStudentsTable(filteredStudents)}
             </div>
           </div>
-        `;
+          
+          <div class="bulk-actions" id="bulkActions" style="display: none; padding: 15px; background: #d4edda; border-radius: 8px; margin-bottom: 20px; border: 1px solid #c3e6cb;">
+            <div style="display: flex; gap: 15px; align-items: center; flex-wrap: wrap;">
+              <span style="font-weight: 600; color: #155724;">
+                <i class="fas fa-check-circle"></i> <span id="bulkSelectedCount">0</span> student(s) selected
+              </span>
+              <button class="btn btn-sm btn-primary" onclick="showBulkYearChangeForSelected()">
+                <i class="fas fa-exchange-alt"></i> Update Year/Semester
+              </button>
+              <button class="btn btn-sm btn-danger" onclick="deleteSelectedStudents()">
+                <i class="fas fa-trash"></i> Delete Selected
+              </button>
+              <button class="btn btn-sm btn-secondary" onclick="clearAllSelections()">
+                <i class="fas fa-times"></i> Clear Selection
+              </button>
+            </div>
+          </div>
+        ` : ''}
+        
+        <div class="table-container" id="studentsTableContainer">
+          ${renderStudentsTable(filteredStudents)}
+        </div>
+      </div>
+    `;
+    
+    // Update selection UI
+    updateSelectionUI();
+    
+  } catch (error) {
+    console.error('Students data error:', error);
+    showAlert('Failed to load students: ' + error.message, 'danger');
+  }
+}
+
+function renderStudentsTable(students) {
+  if (students.length === 0) {
+    return '<p style="text-align: center; padding: 40px; color: #666;">No students found. Add your first student using the "Add Student" button.</p>';
+  }
+  
+  return `
+    <table class="data-table">
+      <thead>
+        <tr>
+          <th style="width: 40px; text-align: center;">
+            <input type="checkbox" class="bulk-select-checkbox" id="selectAllVisible" onchange="toggleSelectAllVisible(this.checked)" style="width: 18px; height: 18px;">
+          </th>
+          <th>Student ID</th>
+          <th>Name</th>
+          <th>Category</th>
+          <th>Year</th>
+          <th>Semester</th>
+          <th>Specialization</th>
+          <th>Email</th>
+          <th>Phone</th>
+          <th style="width: 130px;">Actions</th>
+        </tr>
+      </thead>
+      <tbody>
+        ${students.map(student => {
+          const studentIdStr = student.ID ? student.ID.toString() : '';
+          const isChecked = selectedStudents.has(studentIdStr);
+          
+          return `
+            <tr>
+              <td style="text-align: center;">
+                <input type="checkbox" class="bulk-select-checkbox student-checkbox" 
+                       data-student-id="${studentIdStr}"
+                       data-student-name="${student.Name || ''}"
+                       onchange="toggleStudentSelection('${studentIdStr}', this.checked)"
+                       ${isChecked ? 'checked' : ''}
+                       style="width: 18px; height: 18px;">
+              </td>
+              <td>${student.ID || ''}</td>
+              <td>${student.Name || ''}</td>
+              <td>${student.Category || ''}</td>
+              <td>${student.Year || 'N/A'}</td>
+              <td>${student.Semester || 'N/A'}</td>
+              <td>${student.Specialization || 'N/A'}</td>
+              <td>${student.Email || 'N/A'}</td>
+              <td>${student.Phone || 'N/A'}</td>
+              <td>
+                <div style="display: flex; gap: 5px;">
+                  <button class="btn btn-sm btn-primary" onclick="editStudent('${student.ID}')" title="Edit">
+                    <i class="fas fa-edit"></i>
+                  </button>
+                  <button class="btn btn-sm btn-danger" onclick="deleteStudent('${student.ID}')" title="Delete">
+                    <i class="fas fa-trash"></i>
+                  </button>
+                  <button class="btn btn-sm btn-info" onclick="applyLeaveForStudent('${student.ID}')" title="Apply Leave">
+                    <i class="fas fa-file-signature"></i>
+                  </button>
+                </div>
+              </td>
+            </tr>
+          `;
+        }).join('')}
+      </tbody>
+    </table>
+  `;
+}
+
+function filterStudentList() {
+  // Get filter values
+  currentFilters = {
+    search: document.getElementById('studentSearch').value.toLowerCase(),
+    category: document.getElementById('filterCategory').value,
+    year: document.getElementById('filterYear').value,
+    semester: document.getElementById('filterSemester').value,
+    specialization: document.getElementById('filterSpecialization').value
+  };
+  
+  // Save filters
+  saveFilterState('students', currentFilters);
+  
+  // Filter students
+  const filteredStudents = filterStudents(window.allStudents, currentFilters);
+  
+  // Update table
+  const tableContainer = document.getElementById('studentsTableContainer');
+  if (tableContainer) {
+    tableContainer.innerHTML = renderStudentsTable(filteredStudents);
+  }
+  
+  // Update info
+  const showingSpan = document.getElementById('showingCount');
+  if (showingSpan) showingSpan.textContent = filteredStudents.length;
+  
+  // Update selection UI
+  updateSelectionUI();
+}
+
+function filterStudents(students, filters) {
+  return students.filter(student => {
+    // Search filter
+    if (filters.search) {
+      const searchLower = filters.search.toLowerCase();
+      const idMatch = student.ID && student.ID.toString().toLowerCase().includes(searchLower);
+      const nameMatch = student.Name && student.Name.toLowerCase().includes(searchLower);
+      if (!idMatch && !nameMatch) return false;
+    }
+    
+    // Category filter
+    if (filters.category && student.Category !== filters.category) return false;
+    
+    // Year filter
+    if (filters.year && student.Year !== filters.year) return false;
+    
+    // Semester filter
+    if (filters.semester && student.Semester !== filters.semester) return false;
+    
+    // Specialization filter
+    if (filters.specialization && student.Specialization !== filters.specialization) return false;
+    
+    return true;
+  });
+}
+
+function toggleStudentSelection(studentId, isChecked) {
+  const studentIdStr = studentId.toString();
+  
+  if (isChecked) {
+    selectedStudents.add(studentIdStr);
+  } else {
+    selectedStudents.delete(studentIdStr);
+  }
+  
+  updateSelectionUI();
+  updateBulkActionsVisibility();
+}
+
+function toggleSelectAllStudents(isChecked) {
+  const filteredStudents = filterStudents(window.allStudents, currentFilters);
+  
+  if (isChecked) {
+    // Add all filtered students
+    filteredStudents.forEach(student => {
+      if (student.ID) {
+        selectedStudents.add(student.ID.toString());
+      }
+    });
+  } else {
+    // Remove only filtered students
+    filteredStudents.forEach(student => {
+      if (student.ID) {
+        selectedStudents.delete(student.ID.toString());
+      }
+    });
+  }
+  
+  // Update all checkboxes in the table
+  const checkboxes = document.querySelectorAll('.student-checkbox');
+  checkboxes.forEach(cb => {
+    const studentId = cb.getAttribute('data-student-id');
+    cb.checked = selectedStudents.has(studentId);
+  });
+  
+  updateSelectionUI();
+  updateBulkActionsVisibility();
+}
+
+function toggleSelectAllVisible(isChecked) {
+  const visibleCheckboxes = document.querySelectorAll('.student-checkbox');
+  
+  visibleCheckboxes.forEach(cb => {
+    const studentId = cb.getAttribute('data-student-id');
+    cb.checked = isChecked;
+    
+    if (isChecked) {
+      selectedStudents.add(studentId);
+    } else {
+      selectedStudents.delete(studentId);
+    }
+  });
+  
+  updateSelectionUI();
+  updateBulkActionsVisibility();
+}
+
+function updateSelectionUI() {
+  const selectedCount = selectedStudents.size;
+  
+  // Update selected count displays
+  const selectedSpan = document.getElementById('selectedCount');
+  if (selectedSpan) selectedSpan.textContent = selectedCount;
+  
+  const bulkSelectedSpan = document.getElementById('bulkSelectedCount');
+  if (bulkSelectedSpan) bulkSelectedSpan.textContent = selectedCount;
+  
+  // Update select all checkbox in header
+  const selectAllCheckbox = document.getElementById('selectAllStudents');
+  if (selectAllCheckbox) {
+    const filteredStudents = filterStudents(window.allStudents, currentFilters);
+    const filteredSelectedCount = filteredStudents.filter(s => 
+      s.ID && selectedStudents.has(s.ID.toString())
+    ).length;
+    
+    if (filteredSelectedCount === 0) {
+      selectAllCheckbox.checked = false;
+      selectAllCheckbox.indeterminate = false;
+    } else if (filteredSelectedCount === filteredStudents.length && filteredStudents.length > 0) {
+      selectAllCheckbox.checked = true;
+      selectAllCheckbox.indeterminate = false;
+    } else {
+      selectAllCheckbox.checked = false;
+      selectAllCheckbox.indeterminate = true;
+    }
+  }
+  
+  // Update select all visible checkbox
+  const selectAllVisible = document.getElementById('selectAllVisible');
+  if (selectAllVisible) {
+    const visibleCheckboxes = document.querySelectorAll('.student-checkbox');
+    const visibleSelected = Array.from(visibleCheckboxes).filter(cb => cb.checked).length;
+    
+    if (visibleSelected === 0) {
+      selectAllVisible.checked = false;
+      selectAllVisible.indeterminate = false;
+    } else if (visibleSelected === visibleCheckboxes.length && visibleCheckboxes.length > 0) {
+      selectAllVisible.checked = true;
+      selectAllVisible.indeterminate = false;
+    } else {
+      selectAllVisible.checked = false;
+      selectAllVisible.indeterminate = true;
+    }
+  }
+}
+
+function updateBulkActionsVisibility() {
+  const bulkActions = document.getElementById('bulkActions');
+  if (bulkActions) {
+    bulkActions.style.display = selectedStudents.size > 0 ? 'block' : 'none';
+  }
+}
+
+function clearAllSelections() {
+  selectedStudents.clear();
+  
+  // Uncheck all checkboxes
+  document.querySelectorAll('.student-checkbox').forEach(cb => {
+    cb.checked = false;
+  });
+  
+  updateSelectionUI();
+  updateBulkActionsVisibility();
+}
+
+function clearStudentFilters() {
+  currentFilters = {
+    search: '',
+    category: '',
+    year: '',
+    semester: '',
+    specialization: ''
+  };
+  
+  // Reset input fields
+  if (document.getElementById('studentSearch')) document.getElementById('studentSearch').value = '';
+  if (document.getElementById('filterCategory')) document.getElementById('filterCategory').value = '';
+  if (document.getElementById('filterYear')) document.getElementById('filterYear').value = '';
+  if (document.getElementById('filterSemester')) document.getElementById('filterSemester').value = '';
+  if (document.getElementById('filterSpecialization')) document.getElementById('filterSpecialization').value = '';
+  
+  // Save filters
+  saveFilterState('students', currentFilters);
+  
+  // Refresh list
+  filterStudentList();
+}
+
+async function deleteSelectedStudents() {
+  const selectedCount = selectedStudents.size;
+  
+  if (selectedCount === 0) {
+    showAlert('No students selected', 'warning');
+    return;
+  }
+  
+  showConfirmationDialog(
+    "Delete Selected Students",
+    `Are you sure you want to delete ${selectedCount} selected student(s)? This will also delete all leave applications for these students.`,
+    async () => {
+      try {
+        const db = firebase.firestore();
+        let successCount = 0;
+        let errorCount = 0;
+        const errors = [];
+        
+        showAlert(`Processing deletion of ${selectedCount} students...`, 'info');
+        
+        const selectedArray = Array.from(selectedStudents);
+        
+        for (const studentId of selectedArray) {
+          try {
+            // Find student document
+            const studentsSnapshot = await db.collection('students').where('ID', '==', studentId).get();
+            
+            if (studentsSnapshot.empty) {
+              errors.push(`Student ${studentId} not found`);
+              errorCount++;
+              continue;
+            }
+            
+            const studentDoc = studentsSnapshot.docs[0];
+            
+            // Find all leave applications for this student
+            const applicationsSnapshot = await db.collection('leaveApplications').where('StudentID', '==', studentId).get();
+            
+            // Use batch for atomic operation
+            const batch = db.batch();
+            
+            // Delete student
+            batch.delete(studentDoc.ref);
+            
+            // Delete all applications
+            applicationsSnapshot.docs.forEach(doc => {
+              batch.delete(doc.ref);
+            });
+            
+            await batch.commit();
+            successCount++;
+            
+          } catch (err) {
+            console.error(`Error deleting student ${studentId}:`, err);
+            errors.push(`Student ${studentId}: ${err.message}`);
+            errorCount++;
+          }
+        }
+        
+        // Clear selections
+        selectedStudents.clear();
+        
+        // Show result
+        let message = `✅ Successfully deleted: ${successCount} students`;
+        if (errorCount > 0) message += `, ❌ Errors: ${errorCount}`;
+        
+        if (errors.length > 0) {
+          console.error('Delete errors:', errors);
+        }
+        
+        showAlert(message, successCount > 0 ? 'success' : 'danger');
+        
+        // Refresh the student list
+        setTimeout(() => {
+          showStudentsManagement();
+        }, 1500);
         
       } catch (error) {
-        console.error('Students data error:', error);
-        showAlert('Failed to load students: ' + error.message, 'danger');
+        console.error('Bulk delete error:', error);
+        showAlert('Failed to delete students: ' + error.message, 'danger');
       }
     }
+  );
+}
 
-    function filterStudentList() {
-      currentFilters = {
-        search: document.getElementById('studentSearch').value.toLowerCase(),
-        category: document.getElementById('filterCategory').value,
-        year: document.getElementById('filterYear').value,
-        semester: document.getElementById('filterSemester').value,
-        specialization: document.getElementById('filterSpecialization').value
-      };
+function showBulkUpdateModal() {
+  const selectedCount = selectedStudents.size;
+  
+  if (selectedCount === 0) {
+    showAlert('No students selected', 'warning');
+    return;
+  }
+  
+  // Get selected students data
+  const allStudents = window.allStudents || [];
+  const selectedStudentsData = allStudents.filter(s => 
+    s.ID && selectedStudents.has(s.ID.toString())
+  );
+  
+  // Check if all selected students are from same category
+  const categories = [...new Set(selectedStudentsData.map(s => s.Category).filter(Boolean))];
+  
+  if (categories.length > 1) {
+    showAlert('Cannot bulk update students from different categories. Please select students from the same category.', 'warning');
+    return;
+  }
+  
+  const category = categories[0] || '';
+  
+  const modal = document.getElementById('operationModal');
+  
+  modal.innerHTML = `
+    <div class="modal-content">
+      <div class="close-modal" onclick="closeModal()">&times;</div>
+      <h2><i class="fas fa-exchange-alt"></i> Bulk Update Students</h2>
       
-      saveFilterState('students', currentFilters);
+      <div class="alert alert-info" style="background: #e3f2fd; border-left: 4px solid #2196f3;">
+        <i class="fas fa-info-circle"></i>
+        <div>
+          <strong>${selectedCount}</strong> student(s) selected
+          ${category ? `<br>Category: <strong>${category}</strong>` : ''}
+        </div>
+      </div>
       
-      const filteredStudents = filterStudents(window.allStudents, currentFilters);
-      
-      const tableContainer = document.querySelector('.table-container');
-      if (tableContainer) {
-        tableContainer.innerHTML = renderStudentsTable(filteredStudents);
-      }
-      
-      const infoAlert = document.querySelector('.alert-info');
-      if (infoAlert) {
-        infoAlert.innerHTML = `
-          <i class="fas fa-info-circle"></i> 
-          Showing <strong>${filteredStudents.length}</strong> of <strong>${window.allStudents.length}</strong> students
-          <button class="btn btn-sm btn-secondary" onclick="clearStudentFilters()" style="margin-left: 15px;">
-            <i class="fas fa-times"></i> Clear Filters
+      <form onsubmit="processBulkYearUpdate(event)">
+        <div class="form-row">
+          <div class="form-group">
+            <label>New Year <span style="color: red;">*</span></label>
+            <select class="form-control" id="bulkNewYear" required>
+              <option value="">Select Year</option>
+              <option value="1st Year">1st Year</option>
+              <option value="2nd Year">2nd Year</option>
+              <option value="3rd Year">3rd Year</option>
+              <option value="4th Year">4th Year</option>
+            </select>
+          </div>
+          
+          <div class="form-group">
+            <label>New Semester <span style="color: red;">*</span></label>
+            <select class="form-control" id="bulkNewSemester" required>
+              <option value="">Select Semester</option>
+              <option value="Semester 1">Semester 1</option>
+              <option value="Semester 2">Semester 2</option>
+              <option value="Semester 3">Semester 3</option>
+              <option value="Semester 4">Semester 4</option>
+              <option value="Semester 5">Semester 5</option>
+              <option value="Semester 6">Semester 6</option>
+              <option value="Semester 7">Semester 7</option>
+              <option value="Semester 8">Semester 8</option>
+            </select>
+          </div>
+        </div>
+        
+        <div class="form-group">
+          <label style="display: flex; align-items: center; gap: 10px;">
+            <input type="checkbox" id="bulkUpdateSpecialization" onchange="toggleSpecializationInput(this.checked)">
+            <span>Update Specialization as well</span>
+          </label>
+        </div>
+        
+        <div class="form-group" id="specializationGroup" style="display: none;">
+          <label>New Specialization</label>
+          <input type="text" class="form-control" id="bulkNewSpecialization" placeholder="Enter specialization">
+        </div>
+        
+        <div class="alert alert-warning" style="margin: 20px 0; padding: 10px;">
+          <i class="fas fa-exclamation-triangle"></i>
+          This will update <strong>${selectedCount}</strong> student(s). This action cannot be undone.
+        </div>
+        
+        <div style="display: flex; gap: 10px; margin-top: 20px;">
+          <button type="submit" class="btn btn-success" style="flex: 1;">
+            <i class="fas fa-save"></i> Update ${selectedCount} Students
           </button>
-        `;
-      }
+          <button type="button" class="btn btn-secondary" style="flex: 1;" onclick="closeModal()">
+            Cancel
+          </button>
+        </div>
+      </form>
+    </div>
+  `;
+  
+  modal.style.display = 'flex';
+  
+  // Add toggle function
+  window.toggleSpecializationInput = function(checked) {
+    document.getElementById('specializationGroup').style.display = checked ? 'block' : 'none';
+    if (checked) {
+      document.getElementById('bulkNewSpecialization').setAttribute('required', 'required');
+    } else {
+      document.getElementById('bulkNewSpecialization').removeAttribute('required');
     }
+  };
+}
 
-    function filterStudents(students, filters) {
-      return students.filter(student => {
-        if (filters.search) {
-          const searchMatch = 
-            (student.ID && student.ID.toString().toLowerCase().includes(filters.search)) ||
-            (student.Name && student.Name.toLowerCase().includes(filters.search));
-          if (!searchMatch) return false;
-        }
+function showBulkYearChangeForSelected() {
+  showBulkUpdateModal(); // Just call the same function
+}
+
+async function processBulkYearUpdate(event) {
+  event.preventDefault();
+  
+  const newYear = document.getElementById('bulkNewYear').value;
+  const newSemester = document.getElementById('bulkNewSemester').value;
+  const updateSpecialization = document.getElementById('bulkUpdateSpecialization')?.checked || false;
+  const newSpecialization = updateSpecialization ? document.getElementById('bulkNewSpecialization')?.value : null;
+  
+  if (!newYear || !newSemester) {
+    showAlert('Please select year and semester', 'warning');
+    return;
+  }
+  
+  if (updateSpecialization && !newSpecialization) {
+    showAlert('Please enter specialization', 'warning');
+    return;
+  }
+  
+  const selectedCount = selectedStudents.size;
+  const selectedArray = Array.from(selectedStudents);
+  
+  showAlert(`Updating ${selectedCount} students...`, 'info');
+  
+  try {
+    const db = firebase.firestore();
+    let successCount = 0;
+    let errorCount = 0;
+    const errors = [];
+    
+    for (const studentId of selectedArray) {
+      try {
+        // Find student document
+        const studentsSnapshot = await db.collection('students').where('ID', '==', studentId).get();
         
-        if (filters.category && student.Category !== filters.category) return false;
-        if (filters.year && student.Year !== filters.year) return false;
-        if (filters.semester && student.Semester !== filters.semester) return false;
-        if (filters.specialization && student.Specialization !== filters.specialization) return false;
-        
-        return true;
-      });
-    }
-
-    function renderStudentsTable(students) {
-      if (students.length === 0) {
-        return '<p>No students found. Add your first student using the "Add Student" button.</p>';
-      }
-      
-      return `
-        <table class="data-table">
-          <thead>
-            <tr>
-              <th style="width: 30px;">
-                <input type="checkbox" class="bulk-select-checkbox" id="selectAllVisible" onchange="toggleSelectAllVisible(this.checked)">
-              </th>
-              <th>Student ID</th>
-              <th>Name</th>
-              <th>Category</th>
-              <th>Year</th>
-              <th>Semester</th>
-              <th>Specialization</th>
-              <th>Email</th>
-              <th>Phone</th>
-              <th>Actions</th>
-            </tr>
-          </thead>
-          <tbody>
-            ${students.map(student => `
-              <tr>
-                <td>
-                  <input type="checkbox" class="bulk-select-checkbox student-checkbox" 
-                         data-student-id="${student.ID}"
-                         onchange="toggleStudentSelection('${student.ID}', this.checked)"
-                         ${selectedStudents.has(student.ID.toString()) ? 'checked' : ''}>
-                </td>
-                <td>${student.ID || ''}</td>
-                <td>${student.Name || ''}</td>
-                <td>${student.Category || ''}</td>
-                <td>${student.Year || 'N/A'}</td>
-                <td>${student.Semester || 'N/A'}</td>
-                <td>${student.Specialization || 'N/A'}</td>
-                <td>${student.Email || 'N/A'}</td>
-                <td>${student.Phone || 'N/A'}</td>
-                <td>
-                  <div style="display: flex; gap: 5px;">
-                    <button class="btn btn-sm btn-primary" onclick="editStudent('${student.ID}')" title="Edit">
-                      <i class="fas fa-edit"></i>
-                    </button>
-                    <button class="btn btn-sm btn-danger" onclick="deleteStudent('${student.ID}')" title="Delete">
-                      <i class="fas fa-trash"></i>
-                    </button>
-                    <button class="btn btn-sm btn-info" onclick="applyLeaveForStudent('${student.ID}')" title="Apply Leave">
-                      <i class="fas fa-file-signature"></i>
-                    </button>
-                  </div>
-                </td>
-              </tr>
-            `).join('')}
-          </tbody>
-        </table>
-      `;
-    }
-
-    function toggleStudentSelection(studentId, isChecked) {
-      if (isChecked) {
-        selectedStudents.add(studentId.toString());
-      } else {
-        selectedStudents.delete(studentId.toString());
-      }
-      updateSelectionUI();
-    }
-
-    function toggleSelectAllStudents(isChecked) {
-      selectedStudents.clear();
-      if (isChecked) {
-        window.allStudents.forEach(student => {
-          selectedStudents.add(student.ID.toString());
-        });
-      }
-      updateSelectionUI();
-    }
-
-    function toggleSelectAllVisible(isChecked) {
-      const visibleCheckboxes = document.querySelectorAll('.student-checkbox');
-      visibleCheckboxes.forEach(cb => {
-        const studentId = cb.getAttribute('data-student-id');
-        cb.checked = isChecked;
-        if (isChecked) {
-          selectedStudents.add(studentId);
+        if (!studentsSnapshot.empty) {
+          const studentDoc = studentsSnapshot.docs[0];
+          
+          // Prepare update data
+          const updateData = {
+            Year: newYear,
+            Semester: newSemester,
+            updatedAt: new Date().toISOString(),
+            updatedBy: currentUser?.email || 'admin'
+          };
+          
+          if (updateSpecialization && newSpecialization) {
+            updateData.Specialization = newSpecialization;
+          }
+          
+          // Update student
+          await db.collection('students').doc(studentDoc.id).update(updateData);
+          successCount++;
         } else {
-          selectedStudents.delete(studentId);
+          errors.push(`Student ${studentId} not found`);
+          errorCount++;
         }
-      });
-      updateSelectionUI();
-    }
-
-    function updateSelectionUI() {
-      const selectedCount = selectedStudents.size;
-      const selectedElement = document.getElementById('selectedCount');
-      if (selectedElement) selectedElement.textContent = selectedCount;
-      
-      const bulkActions = document.getElementById('bulkActions');
-      if (bulkActions) {
-        bulkActions.style.display = selectedCount > 0 ? 'flex' : 'none';
-      }
-      
-      const selectAllCheckbox = document.getElementById('selectAllStudents');
-      if (selectAllCheckbox) {
-        selectAllCheckbox.checked = selectedCount === window.allStudents.length && window.allStudents.length > 0;
-        selectAllCheckbox.indeterminate = selectedCount > 0 && selectedCount < window.allStudents.length;
+      } catch (err) {
+        console.error(`Error updating student ${studentId}:`, err);
+        errors.push(`Student ${studentId}: ${err.message}`);
+        errorCount++;
       }
     }
-
-    function clearStudentFilters() {
-      currentFilters = {
-        search: '',
-        category: '',
-        year: '',
-        semester: '',
-        specialization: ''
-      };
-      
-      if (document.getElementById('studentSearch')) document.getElementById('studentSearch').value = '';
-      if (document.getElementById('filterCategory')) document.getElementById('filterCategory').value = '';
-      if (document.getElementById('filterYear')) document.getElementById('filterYear').value = '';
-      if (document.getElementById('filterSemester')) document.getElementById('filterSemester').value = '';
-      if (document.getElementById('filterSpecialization')) document.getElementById('filterSpecialization').value = '';
-      
-      saveFilterState('students', currentFilters);
-      filterStudentList();
-    }
-
+    
+    // Clear selections
+    selectedStudents.clear();
+    
+    // Show result
+    let message = `✅ Successfully updated: ${successCount} students`;
+    if (errorCount > 0) message += `, ❌ Errors: ${errorCount}`;
+    
+    showAlert(message, successCount > 0 ? 'success' : 'danger');
+    closeModal();
+    
+    // Refresh the student list
+    setTimeout(() => {
+      showStudentsManagement();
+    }, 1500);
+    
+  } catch (error) {
+    console.error('Bulk update error:', error);
+    showAlert('Failed to update students: ' + error.message, 'danger');
+  }
+}
     // Add Student Modal
     async function showAddStudentModal() {
       try {
