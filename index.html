@@ -5523,101 +5523,660 @@ function doPost(e) {
       );
     }
 
-    // Year Credits Management (simplified)
-    async function showYearCreditsManagement() {
+   // ==================== YEAR CREDITS MANAGEMENT ====================
+async function showYearCreditsManagement() {
+  try {
+    const db = firebase.firestore();
+    
+    // Get all year credits
+    const yearCreditsSnapshot = await db.collection('yearCredits').get();
+    const yearCredits = yearCreditsSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+    
+    // Get all leave types
+    const leaveTypesSnapshot = await db.collection('leaveTypes').get();
+    const leaveTypes = leaveTypesSnapshot.docs.map(doc => doc.data());
+    
+    // Filter credit-based leave types
+    const creditLeaveTypes = (leaveTypes || []).filter(lt => lt.ApprovalType === 'credit' && lt.Enabled === true);
+    
+    // Get all categories for filter
+    const categoriesSnapshot = await db.collection('categories').get();
+    const categories = categoriesSnapshot.docs.map(doc => doc.data());
+    
+    const contentDiv = document.getElementById('adminMainContent');
+    
+    let creditsHTML = '';
+    if (yearCredits && yearCredits.length > 0) {
+      // Build table headers dynamically based on credit leave types
+      let tableHeaders = '<tr><th>Category</th><th>Year</th>';
+      creditLeaveTypes.forEach(lt => {
+        tableHeaders += `<th>${lt.Code} (${lt.Name})</th>`;
+      });
+      tableHeaders += '<th>Status</th><th>Last Updated</th><th>Actions</th></tr>';
+      
+      // Build table rows
+      let tableRows = '';
+      yearCredits.forEach(yc => {
+        tableRows += '<tr>';
+        tableRows += `<td>${yc.Category || ''}</td>`;
+        tableRows += `<td>${yc.Year || ''}</td>`;
+        
+        // Add credit values for each leave type
+        creditLeaveTypes.forEach(lt => {
+          const value = yc[lt.Code] || 0;
+          tableRows += `<td><span class="badge badge-info">${value}</span></td>`;
+        });
+        
+        tableRows += `<td>
+          <span class="badge ${yc.Active === true ? 'badge-success' : 'badge-danger'}">
+            ${yc.Active === true ? 'ACTIVE' : 'INACTIVE'}
+          </span>
+        </td>`;
+        
+        tableRows += `<td>${yc.updatedAt ? formatDate(yc.updatedAt) : 'N/A'}</td>`;
+        
+        tableRows += `<td>
+          <div class="year-credit-actions">
+            <button class="btn btn-sm btn-primary" onclick="editYearCredit('${yc.Category}', '${yc.Year}')" title="Edit">
+              <i class="fas fa-edit"></i>
+            </button>
+            <button class="btn btn-sm btn-danger" onclick="deleteYearCredit('${yc.Category}', '${yc.Year}')" title="Delete">
+              <i class="fas fa-trash"></i>
+            </button>
+            <button class="btn btn-sm btn-info" onclick="viewYearCreditDetails('${yc.Category}', '${yc.Year}')" title="View Details">
+              <i class="fas fa-eye"></i>
+            </button>
+          </div>
+        </td></tr>`;
+      });
+      
+      creditsHTML = `
+        <div class="table-container">
+          <table class="data-table">
+            <thead>${tableHeaders}</thead>
+            <tbody>${tableRows}</tbody>
+          </table>
+        </div>
+      `;
+    } else {
+      creditsHTML = `
+        <div style="text-align: center; padding: 40px; color: #666;">
+          <i class="fas fa-calendar-times" style="font-size: 3rem; margin-bottom: 15px;"></i>
+          <h3>No Year Credits Found</h3>
+          <p>Add year credits for different categories and years to manage student leave balances.</p>
+        </div>
+      `;
+    }
+    
+    contentDiv.innerHTML = `
+      <div class="card">
+        <div class="card-header">
+          <h2><i class="fas fa-calendar-alt"></i> Year Credits Management</h2>
+          <button class="btn btn-success" onclick="showAddYearCreditModal()">
+            <i class="fas fa-plus"></i> Add Year Credit
+          </button>
+        </div>
+        
+        <div class="alert alert-info">
+          <i class="fas fa-info-circle"></i>
+          <strong>How Year Credits Work:</strong> Year credits determine how many leave days students have available for credit-based leave types (CL, EL, etc.). Each student's available balance = Total Credits - Used Approved Leaves.
+        </div>
+        
+        <div class="stats-grid" style="margin-bottom: 20px;">
+          <div class="stat-card">
+            <h3>${yearCredits.length}</h3>
+            <p>Total Credit Records</p>
+          </div>
+          <div class="stat-card">
+            <h3>${creditLeaveTypes.length}</h3>
+            <p>Credit Leave Types</p>
+          </div>
+          <div class="stat-card">
+            <h3>${categories.length}</h3>
+            <p>Categories</p>
+          </div>
+        </div>
+        
+        ${creditsHTML}
+      </div>
+    `;
+    
+  } catch (error) {
+    console.error('Year credits error:', error);
+    showAlert('Failed to load year credits: ' + error.message, 'danger');
+  }
+}
+
+function showAddYearCreditModal() {
+  Promise.all([
+    firebase.firestore().collection('categories').get(),
+    firebase.firestore().collection('leaveTypes').get(),
+    firebase.firestore().collection('yearCredits').get()
+  ]).then(([categoriesSnapshot, leaveTypesSnapshot, existingCreditsSnapshot]) => {
+    const categories = categoriesSnapshot.docs.map(doc => doc.data());
+    const leaveTypes = leaveTypesSnapshot.docs.map(doc => doc.data());
+    const existingCredits = existingCreditsSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+    
+    const activeCategories = (categories || []).filter(c => c.Enabled === true);
+    const creditLeaveTypes = (leaveTypes || []).filter(lt => lt.ApprovalType === 'credit' && lt.Enabled === true);
+    
+    // Create a Set of existing combinations for duplicate checking
+    const existingCombinations = new Set();
+    existingCredits.forEach(credit => {
+      existingCombinations.add(`${credit.Category}|${credit.Year}`);
+    });
+    
+    const modal = document.getElementById('operationModal');
+    
+    // Generate credit fields for each leave type
+    let creditFields = '';
+    if (creditLeaveTypes.length > 0) {
+      creditFields = creditLeaveTypes.map(lt => `
+        <div class="form-group">
+          <label>${lt.Name} (${lt.Code}) - Max per year: ${lt.MaxDaysPerYear || 'Unlimited'}</label>
+          <input type="number" class="form-control" id="credit_${lt.Code}" value="0" min="0" max="${lt.MaxDaysPerYear || 999}" required>
+          <small style="color: #666;">Maximum allowed: ${lt.MaxDaysPerYear || 'Unlimited'} days</small>
+        </div>
+      `).join('');
+    } else {
+      creditFields = `
+        <div class="alert alert-warning">
+          <i class="fas fa-exclamation-triangle"></i>
+          No credit-based leave types found. Please add credit leave types first.
+        </div>
+      `;
+    }
+    
+    modal.innerHTML = `
+      <div class="modal-content">
+        <div class="close-modal" onclick="closeModal()">&times;</div>
+        <h2><i class="fas fa-plus"></i> Add Year Credit</h2>
+        <form onsubmit="addYearCredit(event)">
+          <div class="form-row">
+            <div class="form-group">
+              <label>Category <span style="color: red;">*</span></label>
+              <select class="form-control" id="yearCreditCategory" required onchange="updateYearOptionsForYearCredits(this.value)">
+                <option value="">Select Category</option>
+                ${activeCategories.map(cat => `
+                  <option value="${cat.Category}">${cat.Category}</option>
+                `).join('')}
+              </select>
+            </div>
+            <div class="form-group">
+              <label>Year <span style="color: red;">*</span></label>
+              <select class="form-control" id="yearCreditYear" required>
+                <option value="">Select Year</option>
+              </select>
+            </div>
+          </div>
+          
+          <div id="duplicateWarning" style="display: none; margin-bottom: 15px;" class="alert alert-warning">
+            <i class="fas fa-exclamation-triangle"></i>
+            <span>A credit record for this category and year already exists. Editing will update the existing record.</span>
+          </div>
+          
+          <h4 style="margin: 20px 0 10px 0;">Leave Credits</h4>
+          <div style="background: #f8f9fa; padding: 15px; border-radius: 8px; margin-bottom: 15px;">
+            ${creditFields}
+          </div>
+          
+          <div class="form-group">
+            <label>
+              <input type="checkbox" id="yearCreditActive" checked> Active
+            </label>
+            <small style="color: #666; display: block;">Inactive credits won't be used for student balance calculations</small>
+          </div>
+          
+          <div style="display: flex; gap: 10px; margin-top: 20px;">
+            <button type="submit" class="btn btn-success" style="flex: 1;" ${creditLeaveTypes.length === 0 ? 'disabled' : ''}>
+              <i class="fas fa-save"></i> Save Year Credit
+            </button>
+            <button type="button" class="btn btn-secondary" style="flex: 1;" onclick="closeModal()">
+              Cancel
+            </button>
+          </div>
+        </form>
+      </div>
+    `;
+    modal.style.display = 'flex';
+    
+    // Function to update year dropdown based on selected category
+    window.updateYearOptionsForYearCredits = async function(category) {
+      const yearSelect = document.getElementById('yearCreditYear');
+      const warningDiv = document.getElementById('duplicateWarning');
+      
+      if (category) {
+        try {
+          const categoriesSnapshot = await firebase.firestore().collection('categories').where('Category', '==', category).get();
+          if (!categoriesSnapshot.empty) {
+            const selectedCat = categoriesSnapshot.docs[0].data();
+            const years = selectedCat.Years ? selectedCat.Years.split(',').map(y => y.trim()) : [];
+            
+            yearSelect.innerHTML = '<option value="">Select Year</option>' + 
+              years.map(year => `<option value="${year}">${year}</option>`).join('');
+            
+            // Check for duplicates when year is selected
+            yearSelect.onchange = function() {
+              const selectedYear = this.value;
+              if (selectedYear) {
+                const combination = `${category}|${selectedYear}`;
+                if (existingCombinations.has(combination)) {
+                  warningDiv.style.display = 'flex';
+                } else {
+                  warningDiv.style.display = 'none';
+                }
+              }
+            };
+          }
+        } catch (error) {
+          console.error('Error loading years:', error);
+        }
+      } else {
+        yearSelect.innerHTML = '<option value="">Select Year</option>';
+        warningDiv.style.display = 'none';
+      }
+    };
+    
+  }).catch(error => {
+    console.error('Add year credit modal error:', error);
+    showAlert('Failed to load data: ' + error.message, 'danger');
+  });
+}
+
+async function addYearCredit(event) {
+  event.preventDefault();
+  
+  const category = document.getElementById('yearCreditCategory').value;
+  const year = document.getElementById('yearCreditYear').value;
+  const active = document.getElementById('yearCreditActive').checked;
+  
+  if (!category || !year) {
+    showAlert('Please select category and year', 'warning');
+    return;
+  }
+  
+  try {
+    const db = firebase.firestore();
+    
+    // Get all credit leave types
+    const leaveTypesSnapshot = await db.collection('leaveTypes').get();
+    const leaveTypes = leaveTypesSnapshot.docs.map(doc => doc.data());
+    const creditLeaveTypes = (leaveTypes || []).filter(lt => lt.ApprovalType === 'credit' && lt.Enabled === true);
+    
+    // Check if record already exists
+    const existingSnapshot = await db.collection('yearCredits')
+      .where('Category', '==', category)
+      .where('Year', '==', year)
+      .get();
+    
+    // Build credit data object
+    const creditData = {
+      Category: category,
+      Year: year,
+      Active: active,
+      updatedAt: new Date().toISOString(),
+      updatedBy: currentUser?.email || 'admin'
+    };
+    
+    // Add values for each credit leave type
+    let hasValues = false;
+    creditLeaveTypes.forEach(lt => {
+      const input = document.getElementById(`credit_${lt.Code}`);
+      if (input) {
+        const value = parseInt(input.value) || 0;
+        creditData[lt.Code] = value;
+        if (value > 0) hasValues = true;
+      }
+    });
+    
+    if (!hasValues) {
+      showAlert('Please set at least one credit value', 'warning');
+      return;
+    }
+    
+    if (!existingSnapshot.empty) {
+      // Update existing record
+      await db.collection('yearCredits').doc(existingSnapshot.docs[0].id).update(creditData);
+      showAlert('Year credit updated successfully!', 'success');
+    } else {
+      // Create new record
+      creditData.createdAt = new Date().toISOString();
+      creditData.createdBy = currentUser?.email || 'admin';
+      await db.collection('yearCredits').add(creditData);
+      showAlert('Year credit added successfully!', 'success');
+    }
+    
+    closeModal();
+    showYearCreditsManagement();
+    
+  } catch (error) {
+    console.error('Add year credit error:', error);
+    showAlert('Failed to save year credit: ' + error.message, 'danger');
+  }
+}
+
+async function editYearCredit(category, year) {
+  try {
+    const db = firebase.firestore();
+    
+    // Get the year credit record
+    const yearCreditsSnapshot = await db.collection('yearCredits')
+      .where('Category', '==', category)
+      .where('Year', '==', year)
+      .get();
+    
+    if (yearCreditsSnapshot.empty) {
+      showAlert('Year credit not found', 'danger');
+      return;
+    }
+    
+    const creditDoc = yearCreditsSnapshot.docs[0];
+    const credit = creditDoc.data();
+    
+    // Get all credit leave types
+    const leaveTypesSnapshot = await db.collection('leaveTypes').get();
+    const leaveTypes = leaveTypesSnapshot.docs.map(doc => doc.data());
+    
+    // Get category details for year options
+    const categoriesSnapshot = await db.collection('categories').where('Category', '==', category).get();
+    const selectedCategory = !categoriesSnapshot.empty ? categoriesSnapshot.docs[0].data() : null;
+    
+    const creditLeaveTypes = (leaveTypes || []).filter(lt => lt.ApprovalType === 'credit' && lt.Enabled === true);
+    
+    const modal = document.getElementById('operationModal');
+    
+    // Generate credit fields with existing values
+    let creditFields = '';
+    creditLeaveTypes.forEach(lt => {
+      const value = credit[lt.Code] || 0;
+      creditFields += `
+        <div class="form-group">
+          <label>${lt.Name} (${lt.Code}) - Max per year: ${lt.MaxDaysPerYear || 'Unlimited'}</label>
+          <input type="number" class="form-control" id="editCredit_${lt.Code}" value="${value}" min="0" max="${lt.MaxDaysPerYear || 999}" required>
+          <small style="color: #666;">Current value: ${value} days</small>
+        </div>
+      `;
+    });
+    
+    modal.innerHTML = `
+      <div class="modal-content">
+        <div class="close-modal" onclick="closeModal()">&times;</div>
+        <h2><i class="fas fa-edit"></i> Edit Year Credit</h2>
+        <form onsubmit="updateYearCredit(event, '${category}', '${year}')">
+          <div class="form-row">
+            <div class="form-group">
+              <label>Category</label>
+              <input type="text" class="form-control" value="${credit.Category}" readonly>
+            </div>
+            <div class="form-group">
+              <label>Year</label>
+              <select class="form-control" id="editYearCreditYear" required>
+                ${selectedCategory && selectedCategory.Years ? 
+                  selectedCategory.Years.split(',').map(y => y.trim()).map(yr => 
+                    `<option value="${yr}" ${credit.Year === yr ? 'selected' : ''}>${yr}</option>`
+                  ).join('') : 
+                  `<option value="${credit.Year}">${credit.Year}</option>`
+                }
+              </select>
+            </div>
+          </div>
+          
+          <h4 style="margin: 20px 0 10px 0;">Leave Credits</h4>
+          <div style="background: #f8f9fa; padding: 15px; border-radius: 8px; margin-bottom: 15px;">
+            ${creditFields}
+          </div>
+          
+          <div class="form-group">
+            <label>
+              <input type="checkbox" id="editYearCreditActive" ${credit.Active === true ? 'checked' : ''}> Active
+            </label>
+          </div>
+          
+          <div class="alert alert-info">
+            <i class="fas fa-info-circle"></i>
+            <strong>Last updated:</strong> ${credit.updatedAt ? formatDate(credit.updatedAt) : 'Never'} by ${credit.updatedBy || 'Unknown'}
+          </div>
+          
+          <div style="display: flex; gap: 10px; margin-top: 20px;">
+            <button type="submit" class="btn btn-success" style="flex: 1;">
+              <i class="fas fa-save"></i> Update Year Credit
+            </button>
+            <button type="button" class="btn btn-danger" style="flex: 1;" onclick="deleteYearCredit('${category}', '${year}')">
+              <i class="fas fa-trash"></i> Delete
+            </button>
+            <button type="button" class="btn btn-secondary" style="flex: 1;" onclick="closeModal()">
+              Cancel
+            </button>
+          </div>
+        </form>
+      </div>
+    `;
+    modal.style.display = 'flex';
+    
+  } catch (error) {
+    console.error('Edit year credit error:', error);
+    showAlert('Failed to load year credit: ' + error.message, 'danger');
+  }
+}
+
+async function updateYearCredit(event, oldCategory, oldYear) {
+  event.preventDefault();
+  
+  try {
+    const db = firebase.firestore();
+    
+    const year = document.getElementById('editYearCreditYear').value;
+    const active = document.getElementById('editYearCreditActive').checked;
+    
+    // Get the existing record
+    const yearCreditsSnapshot = await db.collection('yearCredits')
+      .where('Category', '==', oldCategory)
+      .where('Year', '==', oldYear)
+      .get();
+    
+    if (yearCreditsSnapshot.empty) {
+      showAlert('Year credit not found', 'danger');
+      return;
+    }
+    
+    const creditDoc = yearCreditsSnapshot.docs[0];
+    
+    // Get all credit leave types
+    const leaveTypesSnapshot = await db.collection('leaveTypes').get();
+    const leaveTypes = leaveTypesSnapshot.docs.map(doc => doc.data());
+    const creditLeaveTypes = (leaveTypes || []).filter(lt => lt.ApprovalType === 'credit' && lt.Enabled === true);
+    
+    // Build update data
+    const updateData = {
+      Year: year,
+      Active: active,
+      updatedAt: new Date().toISOString(),
+      updatedBy: currentUser?.email || 'admin'
+    };
+    
+    let hasValues = false;
+    creditLeaveTypes.forEach(lt => {
+      const input = document.getElementById(`editCredit_${lt.Code}`);
+      if (input) {
+        const value = parseInt(input.value) || 0;
+        updateData[lt.Code] = value;
+        if (value > 0) hasValues = true;
+      }
+    });
+    
+    if (!hasValues) {
+      showAlert('Please set at least one credit value', 'warning');
+      return;
+    }
+    
+    await db.collection('yearCredits').doc(creditDoc.id).update(updateData);
+    
+    showAlert('Year credit updated successfully!', 'success');
+    closeModal();
+    showYearCreditsManagement();
+    
+  } catch (error) {
+    console.error('Update year credit error:', error);
+    showAlert('Failed to update year credit: ' + error.message, 'danger');
+  }
+}
+
+async function deleteYearCredit(category, year) {
+  showConfirmationDialog(
+    "Delete Year Credit",
+    `Are you sure you want to delete year credits for ${category} - ${year}? This will affect leave balance calculations for all students in this category/year.`,
+    async () => {
       try {
         const db = firebase.firestore();
         
-        const yearCreditsSnapshot = await db.collection('yearCredits').get();
-        const yearCredits = yearCreditsSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+        const yearCreditsSnapshot = await db.collection('yearCredits')
+          .where('Category', '==', category)
+          .where('Year', '==', year)
+          .get();
         
-        const leaveTypesSnapshot = await db.collection('leaveTypes').get();
-        const leaveTypes = leaveTypesSnapshot.docs.map(doc => doc.data());
-        
-        const creditLeaveTypes = (leaveTypes || []).filter(lt => lt.ApprovalType === 'credit' && lt.Enabled === true);
-        
-        const contentDiv = document.getElementById('adminMainContent');
-        
-        let creditsHTML = '';
-        if (yearCredits && yearCredits.length > 0) {
-          let tableHeaders = '<tr><th>Category</th><th>Year</th>';
-          creditLeaveTypes.forEach(lt => {
-            tableHeaders += `<th>${lt.Code}</th>`;
-          });
-          tableHeaders += '<th>Status</th><th>Actions</th></tr>';
-          
-          let tableRows = '';
-          yearCredits.forEach(yc => {
-            tableRows += '<tr>';
-            tableRows += `<td>${yc.Category || ''}</td>`;
-            tableRows += `<td>${yc.Year || ''}</td>`;
-            
-            creditLeaveTypes.forEach(lt => {
-              const value = yc[lt.Code] || 0;
-              tableRows += `<td>${value}</td>`;
-            });
-            
-            tableRows += `<td><span class="badge ${yc.Active === true ? 'badge-success' : 'badge-danger'}">
-              ${yc.Active === true ? 'ACTIVE' : 'INACTIVE'}
-            </span></td>`;
-            
-            tableRows += `<td>
-              <div class="year-credit-actions">
-                <button class="btn btn-sm btn-primary" onclick="editYearCredit('${yc.Category}', '${yc.Year}')" title="Edit">
-                  <i class="fas fa-edit"></i>
-                </button>
-                <button class="btn btn-sm btn-danger" onclick="deleteYearCredit('${yc.Category}', '${yc.Year}')" title="Delete">
-                  <i class="fas fa-trash"></i>
-                </button>
-              </div>
-            </td></tr>`;
-          });
-          
-          creditsHTML = `
-            <table class="data-table">
-              <thead>${tableHeaders}</thead>
-              <tbody>${tableRows}</tbody>
-            </table>
-          `;
-        } else {
-          creditsHTML = '<p>No year credits found. Add year credits for different categories and years.</p>';
+        if (yearCreditsSnapshot.empty) {
+          showAlert('Year credit not found', 'danger');
+          return;
         }
         
-        contentDiv.innerHTML = `
-          <div class="card">
-            <div class="card-header">
-              <h2><i class="fas fa-calendar-alt"></i> Year Credits Management</h2>
-              <button class="btn btn-success" onclick="showAddYearCreditModal()">
-                <i class="fas fa-plus"></i> Add Year Credit
-              </button>
-            </div>
-            <div class="alert alert-info">
-              <i class="fas fa-info-circle"></i>
-              Year credits determine how many leave days students have available.
-            </div>
-            <div class="table-container">
-              ${creditsHTML}
-            </div>
-          </div>
-        `;
+        await db.collection('yearCredits').doc(yearCreditsSnapshot.docs[0].id).delete();
+        
+        showAlert('Year credit deleted successfully!', 'success');
+        showYearCreditsManagement();
         
       } catch (error) {
-        console.error('Year credits error:', error);
-        showAlert('Failed to load year credits: ' + error.message, 'danger');
+        console.error('Delete year credit error:', error);
+        showAlert('Failed to delete year credit: ' + error.message, 'danger');
       }
     }
+  );
+}
 
-    function showAddYearCreditModal() {
-      showAlert('Add year credit feature', 'info');
-    }
+function viewYearCreditDetails(category, year) {
+  showAlert(`Viewing details for ${category} - ${year}`, 'info');
+}
 
-    function editYearCredit(category, year) {
-      showAlert('Edit year credit feature', 'info');
+// Update student leave balance calculation to properly use year credits
+async function loadStudentLeaveBalance() {
+  if (firebase.apps.length === 0) {
+    document.getElementById('leaveBalanceContainer').innerHTML = `
+      <div class="alert alert-warning">
+        <i class="fas fa-exclamation-triangle"></i>
+        Firebase not configured. Cannot load leave balance.
+      </div>
+    `;
+    return;
+  }
+  
+  try {
+    const db = firebase.firestore();
+    const student = currentStudent || currentUser;
+    
+    // Get year credits for student's category and year
+    const yearCreditsSnapshot = await db.collection('yearCredits')
+      .where('Category', '==', student.Category)
+      .where('Year', '==', student.Year)
+      .where('Active', '==', true)
+      .get();
+    
+    if (yearCreditsSnapshot.empty) {
+      document.getElementById('leaveBalanceContainer').innerHTML = `
+        <div class="alert alert-warning">
+          <i class="fas fa-exclamation-triangle"></i>
+          <strong>No Leave Credits Found</strong>
+          <p>No credit records found for ${student.Category} - ${student.Year}. Please contact administrator.</p>
+        </div>
+      `;
+      return;
     }
-
-    function deleteYearCredit(category, year) {
-      showAlert('Delete year credit feature', 'info');
+    
+    const yearCredit = yearCreditsSnapshot.docs[0].data();
+    
+    // Get all approved leave applications for this student
+    const applicationsSnapshot = await db.collection('leaveApplications')
+      .where('StudentID', '==', student.ID)
+      .where('Status', '==', 'approved')
+      .get();
+    
+    const approvedLeaves = applicationsSnapshot.docs.map(doc => doc.data());
+    
+    // Calculate used credits by leave type
+    const usedCredits = {};
+    approvedLeaves.forEach(app => {
+      if (!usedCredits[app.LeaveType]) {
+        usedCredits[app.LeaveType] = 0;
+      }
+      usedCredits[app.LeaveType] += app.NoOfDays || 0;
+    });
+    
+    // Get all credit leave types
+    const leaveTypesSnapshot = await db.collection('leaveTypes')
+      .where('ApprovalType', '==', 'credit')
+      .where('Enabled', '==', true)
+      .get();
+    
+    const creditLeaveTypes = leaveTypesSnapshot.docs.map(doc => doc.data());
+    
+    if (creditLeaveTypes.length === 0) {
+      document.getElementById('leaveBalanceContainer').innerHTML = `
+        <div style="text-align: center; padding: 40px; color: #666;">
+          <i class="fas fa-calendar-times" style="font-size: 3rem; margin-bottom: 15px;"></i>
+          <h3>No Credit Leave Types</h3>
+          <p>No credit-based leave types have been configured.</p>
+        </div>
+      `;
+      return;
     }
+    
+    // Build balance display
+    let balanceHTML = '';
+    let hasAnyCredits = false;
+    
+    creditLeaveTypes.forEach(lt => {
+      const totalCredits = yearCredit[lt.Code] || 0;
+      const used = usedCredits[lt.Code] || 0;
+      const remaining = Math.max(0, totalCredits - used);
+      
+      if (totalCredits > 0) hasAnyCredits = true;
+      
+      balanceHTML += `
+        <div class="leave-balance-card" style="border-top-color: ${totalCredits > 0 ? '#27ae60' : '#95a5a6'}">
+          <div class="leave-name">${lt.Name} (${lt.Code})</div>
+          <div class="leave-count ${remaining === 0 ? 'text-danger' : ''}">${remaining}</div>
+          <div>Days Available</div>
+          <div style="font-size: 0.85rem; color: #666; margin-top: 5px;">
+            Total: ${totalCredits} | Used: ${used}
+          </div>
+          ${lt.MaxDaysPerYear ? `
+            <div style="font-size: 0.75rem; color: #999; margin-top: 3px;">
+              Max/Year: ${lt.MaxDaysPerYear}
+            </div>
+          ` : ''}
+        </div>
+      `;
+    });
+    
+    if (!hasAnyCredits) {
+      balanceHTML = `
+        <div class="alert alert-warning" style="grid-column: 1/-1;">
+          <i class="fas fa-exclamation-triangle"></i>
+          No credit values have been set for ${student.Category} - ${student.Year}. Please contact administrator.
+        </div>
+      ` + balanceHTML;
+    }
+    
+    document.getElementById('leaveBalanceContainer').innerHTML = balanceHTML;
+    
+  } catch (error) {
+    console.error('Load leave balance error:', error);
+    document.getElementById('leaveBalanceContainer').innerHTML = `
+      <div class="alert alert-danger">
+        <i class="fas fa-exclamation-circle"></i>
+        Failed to load leave balance: ${error.message}
+      </div>
+    `;
+  }
+}
 
     // Leave Approvals (already implemented with email)
     async function showLeaveApprovals() {
