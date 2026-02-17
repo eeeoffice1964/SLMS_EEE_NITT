@@ -2076,85 +2076,97 @@ async function generateApplicationId() {
     const currentYear = new Date().getFullYear().toString();
     const db = firebase.firestore();
     
-    // Get all applications from current year
-    const applicationsSnapshot = await db.collection('leaveApplications')
-      .where('Year', '==', currentYear)
-      .orderBy('SequenceNumber', 'desc')
-      .limit(1)
-      .get();
+    // Use a transaction to ensure atomic increment
+    const counterRef = db.collection('counters').doc('applicationCounter_' + currentYear);
     
-    let nextSequence = 1; // Start from 0001 if no applications
-    
-    if (!applicationsSnapshot.empty) {
-      const lastApplication = applicationsSnapshot.docs[0].data();
-      // If SequenceNumber exists, increment it, otherwise start from 1
-      nextSequence = (lastApplication.SequenceNumber || 0) + 1;
-    }
+    // Run in transaction to prevent race conditions
+    const result = await db.runTransaction(async (transaction) => {
+      const counterDoc = await transaction.get(counterRef);
+      
+      let nextSequence = 1; // Default to 1 if no counter exists
+      
+      if (counterDoc.exists) {
+        // If counter exists, increment it
+        nextSequence = (counterDoc.data().currentSequence || 0) + 1;
+      }
+      
+      // Update the counter document
+      transaction.set(counterRef, {
+        currentSequence: nextSequence,
+        year: currentYear,
+        updatedAt: new Date().toISOString()
+      }, { merge: true });
+      
+      return nextSequence;
+    });
     
     // Format sequence as 4-digit number (0001, 0002, etc.)
-    const formattedSequence = nextSequence.toString().padStart(4, '0');
+    const formattedSequence = result.toString().padStart(4, '0');
     const applicationId = `LA-${currentYear}-${formattedSequence}`;
     
-    console.log('Generated Application ID:', applicationId, 'Sequence:', nextSequence);
+    console.log('Generated Application ID:', applicationId, 'Sequence:', result);
     
     return {
       id: applicationId,
       year: currentYear,
-      sequence: nextSequence
+      sequence: result
     };
+    
   } catch (error) {
     console.error('Error generating application ID:', error);
     
-    // Fallback to timestamp-based ID if Firestore fails
-    // But make sure it starts from a low number by using modulo
-    const timestamp = Date.now();
-    // Use modulo 10000 to ensure it's between 0-9999, then pad
-    const sequence = (timestamp % 9000) + 1000; // Ensures between 1000-9999
-    const formattedSequence = sequence.toString().padStart(4, '0');
-    
-    return {
-      id: `LA-${new Date().getFullYear()}-${formattedSequence}`,
-      year: new Date().getFullYear().toString(),
-      sequence: sequence
-    };
+    // Fallback method if transaction fails
+    try {
+      const db = firebase.firestore();
+      const currentYear = new Date().getFullYear().toString();
+      
+      // Get all applications from current year to find max sequence
+      const applicationsSnapshot = await db.collection('leaveApplications')
+        .where('Year', '==', currentYear)
+        .orderBy('SequenceNumber', 'desc')
+        .limit(1)
+        .get();
+      
+      let nextSequence = 1;
+      
+      if (!applicationsSnapshot.empty) {
+        const lastApplication = applicationsSnapshot.docs[0].data();
+        nextSequence = (lastApplication.SequenceNumber || 0) + 1;
+      }
+      
+      const formattedSequence = nextSequence.toString().padStart(4, '0');
+      const applicationId = `LA-${currentYear}-${formattedSequence}`;
+      
+      return {
+        id: applicationId,
+        year: currentYear,
+        sequence: nextSequence
+      };
+      
+    } catch (fallbackError) {
+      console.error('Fallback ID generation also failed:', fallbackError);
+      
+      // Last resort - use timestamp but ensure it's sequential by using current time
+      const timestamp = Date.now();
+      // Get the last 4 digits of timestamp (will be between 0000-9999)
+      const sequence = parseInt(timestamp.toString().slice(-4));
+      const formattedSequence = sequence.toString().padStart(4, '0');
+      
+      return {
+        id: `LA-${new Date().getFullYear()}-${formattedSequence}`,
+        year: new Date().getFullYear().toString(),
+        sequence: sequence
+      };
+    }
   }
 }
 
-// Also update the submitLeaveRequest function to ensure SequenceNumber is properly set
+// Also update submitLeaveRequest to verify the sequence
 async function submitLeaveRequest(event) {
   event.preventDefault();
   
   const fromDate = document.getElementById('leaveFromDate').value;
   const toDate = document.getElementById('leaveToDate').value;
-  
-  // Generate application ID with proper format
-  const appIdInfo = await generateApplicationId();
-  
-  const applicationData = {
-    ID: appIdInfo.id,
-    Year: appIdInfo.year,
-    SequenceNumber: appIdInfo.sequence, // This should now be a number starting from 1
-    StudentID: document.getElementById('leaveStudentId').value,
-    LeaveType: document.getElementById('leaveType').value,
-    FromDate: fromDate,
-    ToDate: toDate,
-    NoOfDays: parseInt(document.getElementById('leaveNoOfDays').value) || 1,
-    Reason: document.getElementById('leaveReason').value,
-    Status: document.getElementById('leaveStatus').value,
-    AppliedDate: new Date().toISOString(),
-    AppliedBy: currentUser?.email || 'admin',
-    Semester: document.getElementById('selectedStudentSemester').textContent !== '-' ? document.getElementById('selectedStudentSemester').textContent : ''
-  };
-  
-  if (!applicationData.StudentID || !applicationData.LeaveType) {
-    showAlert('Please select a student and leave type', 'warning');
-    return;
-  }
-  
-  if (!applicationData.FromDate || !applicationData.ToDate) {
-    showAlert('Please select valid dates', 'warning');
-    return;
-  }
   
   const submitBtn = document.getElementById('submitLeaveBtn');
   const originalText = submitBtn.innerHTML;
@@ -2164,28 +2176,68 @@ async function submitLeaveRequest(event) {
   try {
     const db = firebase.firestore();
     
-    // Double-check for duplicate Application ID (safety check)
+    // Generate application ID with proper sequence
+    const appIdInfo = await generateApplicationId();
+    
+    // Verify that the sequence is actually the next number
+    // This is an additional safety check
+    const verifySnapshot = await db.collection('leaveApplications')
+      .where('Year', '==', appIdInfo.year)
+      .orderBy('SequenceNumber', 'desc')
+      .limit(1)
+      .get();
+    
+    let verifiedSequence = appIdInfo.sequence;
+    let verifiedId = appIdInfo.id;
+    
+    if (!verifySnapshot.empty) {
+      const highestExisting = verifySnapshot.docs[0].data().SequenceNumber || 0;
+      // If our generated sequence is less than or equal to highest existing, we need to adjust
+      if (appIdInfo.sequence <= highestExisting) {
+        verifiedSequence = highestExisting + 1;
+        const formattedSequence = verifiedSequence.toString().padStart(4, '0');
+        verifiedId = `LA-${appIdInfo.year}-${formattedSequence}`;
+        console.log('Adjusted sequence to avoid collision:', verifiedId);
+      }
+    }
+    
+    const applicationData = {
+      ID: verifiedId,
+      Year: appIdInfo.year,
+      SequenceNumber: verifiedSequence,
+      StudentID: document.getElementById('leaveStudentId').value,
+      LeaveType: document.getElementById('leaveType').value,
+      FromDate: fromDate,
+      ToDate: toDate,
+      NoOfDays: parseInt(document.getElementById('leaveNoOfDays').value) || 1,
+      Reason: document.getElementById('leaveReason').value,
+      Status: document.getElementById('leaveStatus').value,
+      AppliedDate: new Date().toISOString(),
+      AppliedBy: currentUser?.email || 'admin',
+      Semester: document.getElementById('selectedStudentSemester').textContent !== '-' ? document.getElementById('selectedStudentSemester').textContent : ''
+    };
+    
+    if (!applicationData.StudentID || !applicationData.LeaveType) {
+      showAlert('Please select a student and leave type', 'warning');
+      submitBtn.innerHTML = originalText;
+      submitBtn.disabled = false;
+      return;
+    }
+    
+    if (!applicationData.FromDate || !applicationData.ToDate) {
+      showAlert('Please select valid dates', 'warning');
+      submitBtn.innerHTML = originalText;
+      submitBtn.disabled = false;
+      return;
+    }
+    
+    // Final check for duplicate ID
     const existingIdSnapshot = await db.collection('leaveApplications').where('ID', '==', applicationData.ID).get();
     if (!existingIdSnapshot.empty) {
-      // If somehow duplicate, regenerate with next available sequence
-      console.warn('Duplicate Application ID detected, regenerating...');
-      
-      // Get the highest sequence number for current year
-      const allAppsSnapshot = await db.collection('leaveApplications')
-        .where('Year', '==', appIdInfo.year)
-        .orderBy('SequenceNumber', 'desc')
-        .limit(1)
-        .get();
-      
-      let maxSequence = 0;
-      if (!allAppsSnapshot.empty) {
-        maxSequence = allAppsSnapshot.docs[0].data().SequenceNumber || 0;
-      }
-      
-      const newSequence = maxSequence + 1;
-      const newFormattedSequence = newSequence.toString().padStart(4, '0');
-      applicationData.ID = `LA-${appIdInfo.year}-${newFormattedSequence}`;
-      applicationData.SequenceNumber = newSequence;
+      showAlert('Application ID collision detected. Please try again.', 'warning');
+      submitBtn.innerHTML = originalText;
+      submitBtn.disabled = false;
+      return;
     }
     
     await db.collection('leaveApplications').add(applicationData);
@@ -2209,6 +2261,95 @@ async function submitLeaveRequest(event) {
   } finally {
     submitBtn.innerHTML = originalText;
     submitBtn.disabled = false;
+  }
+}
+
+// Initialize the counter collection when setting up Firebase
+async function initializeApplicationCounter() {
+  try {
+    const db = firebase.firestore();
+    const currentYear = new Date().getFullYear().toString();
+    const counterRef = db.collection('counters').doc('applicationCounter_' + currentYear);
+    
+    const counterDoc = await counterRef.get();
+    if (!counterDoc.exists) {
+      // Find the highest sequence number from existing applications
+      const applicationsSnapshot = await db.collection('leaveApplications')
+        .where('Year', '==', currentYear)
+        .orderBy('SequenceNumber', 'desc')
+        .limit(1)
+        .get();
+      
+      let currentMax = 0;
+      if (!applicationsSnapshot.empty) {
+        currentMax = applicationsSnapshot.docs[0].data().SequenceNumber || 0;
+      }
+      
+      await counterRef.set({
+        currentSequence: currentMax,
+        year: currentYear,
+        initializedAt: new Date().toISOString()
+      });
+      
+      console.log(`Application counter initialized for ${currentYear} with sequence: ${currentMax}`);
+    }
+  } catch (error) {
+    console.error('Error initializing application counter:', error);
+  }
+}
+
+// Call this during Firebase initialization
+async function initializeDefaultData() {
+  try {
+    const db = firebase.firestore();
+    
+    const leaveTypesSnapshot = await db.collection('leaveTypes').limit(1).get();
+    
+    if (leaveTypesSnapshot.empty) {
+      const defaultLeaveTypes = [
+        { Code: 'CL', Name: 'Casual Leave', Description: 'For casual/emergency leaves', ApprovalType: 'credit', MaxDaysPerApplication: 5, MaxDaysPerYear: 12, Enabled: true },
+        { Code: 'RH', Name: 'Restricted Holiday', Description: 'Optional holidays', ApprovalType: 'approval', MaxDaysPerApplication: 1, MaxDaysPerYear: 2, Enabled: true },
+        { Code: 'ML', Name: 'Medical Leave', Description: 'For medical reasons', ApprovalType: 'approval', MaxDaysPerApplication: 10, MaxDaysPerYear: 20, Enabled: true },
+        { Code: 'EL', Name: 'Earned Leave', Description: 'Accumulated leave', ApprovalType: 'credit', MaxDaysPerApplication: 15, MaxDaysPerYear: 30, Enabled: true }
+      ];
+      
+      for (const lt of defaultLeaveTypes) {
+        await db.collection('leaveTypes').add(lt);
+      }
+    }
+    
+    const categoriesSnapshot = await db.collection('categories').limit(1).get();
+    
+    if (categoriesSnapshot.empty) {
+      const defaultCategories = [
+        { 
+          Category: 'B.Tech', 
+          Years: '1st Year,2nd Year,3rd Year,4th Year', 
+          Semesters: 'Semester 1,Semester 2,Semester 3,Semester 4,Semester 5,Semester 6,Semester 7,Semester 8',
+          Specializations: 'Computer Science,Information Technology,Electronics,Mechanical,Civil,Electrical',
+          Enabled: true
+        },
+        { 
+          Category: 'M.Tech', 
+          Years: '1st Year,2nd Year', 
+          Semesters: 'Semester 1,Semester 2,Semester 3,Semester 4',
+          Specializations: 'Computer Science,Electronics,Mechanical,Structural Engineering',
+          Enabled: true
+        }
+      ];
+      
+      for (const cat of defaultCategories) {
+        await db.collection('categories').add(cat);
+      }
+    }
+    
+    // Initialize application counter
+    await initializeApplicationCounter();
+    
+    console.log('Default data initialized');
+    
+  } catch (error) {
+    console.error('Error initializing default data:', error);
   }
 }
     // ==================== ENHANCED EMAIL TEMPLATE FUNCTIONS ====================
