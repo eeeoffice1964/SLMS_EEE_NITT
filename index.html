@@ -2071,46 +2071,146 @@
     }
 
     // ==================== APPLICATION ID GENERATOR ====================
-    async function generateApplicationId() {
-      try {
-        const currentYear = new Date().getFullYear().toString();
-        const db = firebase.firestore();
-        
-        // Get all applications from current year
-        const applicationsSnapshot = await db.collection('leaveApplications')
-          .where('Year', '==', currentYear)
-          .orderBy('SequenceNumber', 'desc')
-          .limit(1)
-          .get();
-        
-        let nextSequence = 1; // Start from 0001 if no applications
-        
-        if (!applicationsSnapshot.empty) {
-          const lastApplication = applicationsSnapshot.docs[0].data();
-          nextSequence = (lastApplication.SequenceNumber || 0) + 1;
-        }
-        
-        // Format sequence as 4-digit number (0001, 0002, etc.)
-        const formattedSequence = nextSequence.toString().padStart(4, '0');
-        const applicationId = `LA-${currentYear}-${formattedSequence}`;
-        
-        return {
-          id: applicationId,
-          year: currentYear,
-          sequence: nextSequence
-        };
-      } catch (error) {
-        console.error('Error generating application ID:', error);
-        // Fallback to timestamp-based ID if Firestore fails
-        const timestamp = Date.now();
-        return {
-          id: `LA-${new Date().getFullYear()}-${timestamp.toString().slice(-4)}`,
-          year: new Date().getFullYear().toString(),
-          sequence: parseInt(timestamp.toString().slice(-4))
-        };
+async function generateApplicationId() {
+  try {
+    const currentYear = new Date().getFullYear().toString();
+    const db = firebase.firestore();
+    
+    // Get all applications from current year
+    const applicationsSnapshot = await db.collection('leaveApplications')
+      .where('Year', '==', currentYear)
+      .orderBy('SequenceNumber', 'desc')
+      .limit(1)
+      .get();
+    
+    let nextSequence = 1; // Start from 0001 if no applications
+    
+    if (!applicationsSnapshot.empty) {
+      const lastApplication = applicationsSnapshot.docs[0].data();
+      // If SequenceNumber exists, increment it, otherwise start from 1
+      nextSequence = (lastApplication.SequenceNumber || 0) + 1;
+    }
+    
+    // Format sequence as 4-digit number (0001, 0002, etc.)
+    const formattedSequence = nextSequence.toString().padStart(4, '0');
+    const applicationId = `LA-${currentYear}-${formattedSequence}`;
+    
+    console.log('Generated Application ID:', applicationId, 'Sequence:', nextSequence);
+    
+    return {
+      id: applicationId,
+      year: currentYear,
+      sequence: nextSequence
+    };
+  } catch (error) {
+    console.error('Error generating application ID:', error);
+    
+    // Fallback to timestamp-based ID if Firestore fails
+    // But make sure it starts from a low number by using modulo
+    const timestamp = Date.now();
+    // Use modulo 10000 to ensure it's between 0-9999, then pad
+    const sequence = (timestamp % 9000) + 1000; // Ensures between 1000-9999
+    const formattedSequence = sequence.toString().padStart(4, '0');
+    
+    return {
+      id: `LA-${new Date().getFullYear()}-${formattedSequence}`,
+      year: new Date().getFullYear().toString(),
+      sequence: sequence
+    };
+  }
+}
+
+// Also update the submitLeaveRequest function to ensure SequenceNumber is properly set
+async function submitLeaveRequest(event) {
+  event.preventDefault();
+  
+  const fromDate = document.getElementById('leaveFromDate').value;
+  const toDate = document.getElementById('leaveToDate').value;
+  
+  // Generate application ID with proper format
+  const appIdInfo = await generateApplicationId();
+  
+  const applicationData = {
+    ID: appIdInfo.id,
+    Year: appIdInfo.year,
+    SequenceNumber: appIdInfo.sequence, // This should now be a number starting from 1
+    StudentID: document.getElementById('leaveStudentId').value,
+    LeaveType: document.getElementById('leaveType').value,
+    FromDate: fromDate,
+    ToDate: toDate,
+    NoOfDays: parseInt(document.getElementById('leaveNoOfDays').value) || 1,
+    Reason: document.getElementById('leaveReason').value,
+    Status: document.getElementById('leaveStatus').value,
+    AppliedDate: new Date().toISOString(),
+    AppliedBy: currentUser?.email || 'admin',
+    Semester: document.getElementById('selectedStudentSemester').textContent !== '-' ? document.getElementById('selectedStudentSemester').textContent : ''
+  };
+  
+  if (!applicationData.StudentID || !applicationData.LeaveType) {
+    showAlert('Please select a student and leave type', 'warning');
+    return;
+  }
+  
+  if (!applicationData.FromDate || !applicationData.ToDate) {
+    showAlert('Please select valid dates', 'warning');
+    return;
+  }
+  
+  const submitBtn = document.getElementById('submitLeaveBtn');
+  const originalText = submitBtn.innerHTML;
+  submitBtn.innerHTML = '<div class="loading-spinner"></div> Submitting...';
+  submitBtn.disabled = true;
+  
+  try {
+    const db = firebase.firestore();
+    
+    // Double-check for duplicate Application ID (safety check)
+    const existingIdSnapshot = await db.collection('leaveApplications').where('ID', '==', applicationData.ID).get();
+    if (!existingIdSnapshot.empty) {
+      // If somehow duplicate, regenerate with next available sequence
+      console.warn('Duplicate Application ID detected, regenerating...');
+      
+      // Get the highest sequence number for current year
+      const allAppsSnapshot = await db.collection('leaveApplications')
+        .where('Year', '==', appIdInfo.year)
+        .orderBy('SequenceNumber', 'desc')
+        .limit(1)
+        .get();
+      
+      let maxSequence = 0;
+      if (!allAppsSnapshot.empty) {
+        maxSequence = allAppsSnapshot.docs[0].data().SequenceNumber || 0;
+      }
+      
+      const newSequence = maxSequence + 1;
+      const newFormattedSequence = newSequence.toString().padStart(4, '0');
+      applicationData.ID = `LA-${appIdInfo.year}-${newFormattedSequence}`;
+      applicationData.SequenceNumber = newSequence;
+    }
+    
+    await db.collection('leaveApplications').add(applicationData);
+    
+    // If status is approved, send email notification
+    if (applicationData.Status === 'approved' && applicationData.StudentID) {
+      const studentSnapshot = await db.collection('students').where('ID', '==', applicationData.StudentID).get();
+      if (!studentSnapshot.empty) {
+        const student = studentSnapshot.docs[0].data();
+        await sendApprovalEmail(applicationData, student, 'approved');
       }
     }
-
+    
+    showAlert(`Leave request submitted successfully! (ID: ${applicationData.ID})`, 'success');
+    closeModal();
+    showLeaveApprovals();
+    
+  } catch (error) {
+    console.error('Submit leave request error:', error);
+    showAlert('Failed to submit leave request: ' + error.message, 'danger');
+  } finally {
+    submitBtn.innerHTML = originalText;
+    submitBtn.disabled = false;
+  }
+}
     // ==================== ENHANCED EMAIL TEMPLATE FUNCTIONS ====================
     
     /**
@@ -3621,126 +3721,415 @@ function doPost(e) {
     }
 
     // ==================== STUDENT SECTIONS ====================
-    function showStudentSection(section, silent = false) {
-      if (!silent && event && event.target) {
-        document.querySelectorAll('#studentDashboard .menu-btn').forEach(btn => btn.classList.remove('active'));
-        event.target.classList.add('active');
-      }
-      
-      switch(section) {
-        case 'dashboard':
-          showStudentDashboardHome();
-          break;
-        case 'leaveBalance':
-          showStudentLeaveBalance();
-          break;
-        case 'leaveHistory':
-          showStudentLeaveHistory();
-          break;
-      }
-    }
+function showStudentSection(section, silent = false) {
+  if (!silent && event && event.target) {
+    document.querySelectorAll('#studentDashboard .menu-btn').forEach(btn => btn.classList.remove('active'));
+    event.target.classList.add('active');
+  }
+  
+  switch(section) {
+    case 'dashboard':
+      showStudentDashboardHome();
+      break;
+    case 'leaveBalance':
+      showStudentLeaveBalance();
+      break;
+    case 'leaveHistory':
+      showStudentLeaveHistory();
+      break;
+  }
+}
 
-    function showStudentDashboardHome() {
-      const student = currentStudent || currentUser;
-      const contentDiv = document.getElementById('studentMainContent');
-      
-      contentDiv.innerHTML = `
-        <div class="card">
-          <div class="card-header">
-            <h2><i class="fas fa-tachometer-alt"></i> Student Dashboard</h2>
+function showStudentDashboardHome() {
+  const student = currentStudent || currentUser;
+  if (!student) {
+    showAlert('Student data not found', 'danger');
+    return;
+  }
+  
+  const contentDiv = document.getElementById('studentMainContent');
+  
+  contentDiv.innerHTML = `
+    <div class="card">
+      <div class="card-header">
+        <h2><i class="fas fa-tachometer-alt"></i> Student Dashboard</h2>
+      </div>
+      <div style="padding: 20px;">
+        <div style="display: flex; align-items: center; gap: 20px; margin-bottom: 20px;">
+          <div style="width: 60px; height: 60px; background: var(--student-color); border-radius: 50%; display: flex; align-items: center; justify-content: center; color: white; font-size: 1.5rem;">
+            <i class="fas fa-user-graduate"></i>
           </div>
-          <div style="padding: 20px;">
-            <div style="display: flex; align-items: center; gap: 20px; margin-bottom: 20px;">
-              <div style="width: 60px; height: 60px; background: var(--student-color); border-radius: 50%; display: flex; align-items: center; justify-content: center; color: white; font-size: 1.5rem;">
-                <i class="fas fa-user-graduate"></i>
-              </div>
-              <div>
-                <h3 style="margin-bottom: 5px;">${student.Name || 'Student'}</h3>
-                <p style="color: #666; margin: 0;">
-                  ${student.ID || ''} | ${student.Category || ''} ${student.Year ? '- ' + student.Year : ''}
-                  ${student.Semester ? '| ' + student.Semester : ''}
-                  ${student.Specialization ? '| ' + student.Specialization : ''}
-                  ${student.Email ? '| Email: ' + student.Email : ''}
-                </p>
-              </div>
+          <div>
+            <h3 style="margin-bottom: 5px;">${student.Name || 'Student'}</h3>
+            <p style="color: #666; margin: 0;">
+              ${student.ID || ''} | ${student.Category || ''} ${student.Year ? '- ' + student.Year : ''}
+              ${student.Semester ? '| ' + student.Semester : ''}
+              ${student.Specialization ? '| ' + student.Specialization : ''}
+              ${student.Email ? '| Email: ' + student.Email : ''}
+            </p>
+          </div>
+        </div>
+        
+        <div style="margin-top: 30px;">
+          <h3 style="margin-bottom: 15px;"><i class="fas fa-info-circle"></i> Quick Info</h3>
+          <div class="stats-grid">
+            <div class="stat-card">
+              <h3 id="studentTotalLeaves">0</h3>
+              <p>Total Leaves</p>
             </div>
-            
-            <div style="margin-top: 30px;">
-              <h3 style="margin-bottom: 15px;"><i class="fas fa-info-circle"></i> Quick Info</h3>
-              <div class="stats-grid">
-                <div class="stat-card">
-                  <h3 id="studentTotalLeaves">0</h3>
-                  <p>Total Leaves</p>
-                </div>
-                <div class="stat-card">
-                  <h3 id="studentApprovedLeaves">0</h3>
-                  <p>Approved Leaves</p>
-                </div>
-                <div class="stat-card">
-                  <h3 id="studentPendingLeaves">0</h3>
-                  <p>Pending Leaves</p>
-                </div>
-                <div class="stat-card">
-                  <h3 id="studentCreditTypes">0</h3>
-                  <p>Credit Types</p>
-                </div>
-              </div>
+            <div class="stat-card">
+              <h3 id="studentApprovedLeaves">0</h3>
+              <p>Approved Leaves</p>
+            </div>
+            <div class="stat-card">
+              <h3 id="studentPendingLeaves">0</h3>
+              <p>Pending Leaves</p>
+            </div>
+            <div class="stat-card">
+              <h3 id="studentCreditTypes">0</h3>
+              <p>Credit Types</p>
             </div>
           </div>
         </div>
-      `;
-      
-      loadStudentStats();
-    }
+      </div>
+    </div>
+  `;
+  
+  loadStudentStats();
+}
 
-    async function loadStudentStats() {
-      if (firebase.apps.length === 0) return;
-      
-      try {
-        const db = firebase.firestore();
-        const student = currentStudent || currentUser;
-        
-        const applicationsSnapshot = await db.collection('leaveApplications').where('StudentID', '==', student.ID).get();
-        const applications = applicationsSnapshot.docs.map(doc => doc.data());
-        
-        const total = applications.length;
-        const approved = applications.filter(app => app.Status === 'approved').length;
-        const pending = applications.filter(app => app.Status === 'pending').length;
-        
-        document.getElementById('studentTotalLeaves').textContent = total;
-        document.getElementById('studentApprovedLeaves').textContent = approved;
-        document.getElementById('studentPendingLeaves').textContent = pending;
-        
-        const leaveTypesSnapshot = await db.collection('leaveTypes').where('ApprovalType', '==', 'credit').get();
-        document.getElementById('studentCreditTypes').textContent = leaveTypesSnapshot.size;
-        
-      } catch (error) {
-        console.error('Load student stats error:', error);
-      }
+async function loadStudentStats() {
+  if (firebase.apps.length === 0) return;
+  
+  try {
+    const db = firebase.firestore();
+    const student = currentStudent || currentUser;
+    
+    if (!student || !student.ID) {
+      console.error('Student data not found for stats');
+      return;
     }
+    
+    const applicationsSnapshot = await db.collection('leaveApplications')
+      .where('StudentID', '==', student.ID)
+      .get();
+    
+    const applications = applicationsSnapshot.docs.map(doc => doc.data());
+    
+    const total = applications.length;
+    const approved = applications.filter(app => app.Status === 'approved').length;
+    const pending = applications.filter(app => app.Status === 'pending').length;
+    
+    document.getElementById('studentTotalLeaves').textContent = total;
+    document.getElementById('studentApprovedLeaves').textContent = approved;
+    document.getElementById('studentPendingLeaves').textContent = pending;
+    
+    const leaveTypesSnapshot = await db.collection('leaveTypes').where('ApprovalType', '==', 'credit').get();
+    document.getElementById('studentCreditTypes').textContent = leaveTypesSnapshot.size;
+    
+  } catch (error) {
+    console.error('Load student stats error:', error);
+  }
+}
 
-    function showStudentLeaveBalance() {
-      const contentDiv = document.getElementById('studentMainContent');
-      
-      contentDiv.innerHTML = `
-        <div class="card">
-          <div class="card-header">
-            <h2><i class="fas fa-chart-pie"></i> My Leave Balance</h2>
+function showStudentLeaveBalance() {
+  const contentDiv = document.getElementById('studentMainContent');
+  
+  contentDiv.innerHTML = `
+    <div class="card">
+      <div class="card-header">
+        <h2><i class="fas fa-chart-pie"></i> My Leave Balance</h2>
+      </div>
+      <div style="padding: 20px;">
+        <div class="leave-balance-container" id="leaveBalanceContainer">
+          <div style="text-align: center; padding: 40px; color: #666;">
+            <i class="fas fa-spinner fa-spin" style="font-size: 2rem;"></i>
+            <p>Loading leave balance...</p>
           </div>
-          <div style="padding: 20px;">
-            <div class="leave-balance-container" id="leaveBalanceContainer">
-              <div style="text-align: center; padding: 40px; color: #666;">
-                <i class="fas fa-spinner fa-spin" style="font-size: 2rem;"></i>
-                <p>Loading leave balance...</p>
-              </div>
+        </div>
+      </div>
+    </div>
+  `;
+  
+  loadStudentLeaveBalance();
+}
+
+// ==================== FIXED STUDENT LEAVE HISTORY ====================
+async function showStudentLeaveHistory() {
+  if (firebase.apps.length === 0) {
+    document.getElementById('studentMainContent').innerHTML = `
+      <div class="alert alert-warning">
+        <i class="fas fa-exclamation-triangle"></i>
+        Firebase not configured. Cannot load leave history.
+      </div>
+    `;
+    return;
+  }
+  
+  const student = currentStudent || currentUser;
+  
+  // Check if student data exists
+  if (!student || !student.ID) {
+    console.error('Student data not found:', student);
+    document.getElementById('studentMainContent').innerHTML = `
+      <div class="alert alert-danger">
+        <i class="fas fa-exclamation-circle"></i>
+        <div>
+          <strong>Student Data Not Found</strong>
+          <p>Unable to load your leave history. Please try logging in again.</p>
+          <button class="btn btn-primary" onclick="logout('student')" style="margin-top: 10px;">
+            <i class="fas fa-sign-out-alt"></i> Logout & Login Again
+          </button>
+        </div>
+      </div>
+    `;
+    return;
+  }
+  
+  try {
+    const db = firebase.firestore();
+    
+    // Show loading state
+    const contentDiv = document.getElementById('studentMainContent');
+    contentDiv.innerHTML = `
+      <div class="card">
+        <div class="card-header">
+          <h2><i class="fas fa-history"></i> My Leave History</h2>
+          <span class="badge badge-info">Loading...</span>
+        </div>
+        <div style="text-align: center; padding: 40px;">
+          <i class="fas fa-spinner fa-spin" style="font-size: 3rem; color: #3498db;"></i>
+          <p style="margin-top: 20px; color: #666;">Loading your leave applications...</p>
+        </div>
+      </div>
+    `;
+    
+    // Query leave applications for this student
+    console.log('Fetching leave history for student ID:', student.ID);
+    
+    const applicationsSnapshot = await db.collection('leaveApplications')
+      .where('StudentID', '==', student.ID)
+      .orderBy('AppliedDate', 'desc')
+      .get();
+    
+    console.log('Found applications:', applicationsSnapshot.size);
+    
+    const applications = applicationsSnapshot.docs.map(doc => {
+      const data = doc.data();
+      return {
+        id: doc.id,
+        ...data
+      };
+    });
+    
+    // Build the HTML content
+    let applicationsHTML = '';
+    
+    if (applications.length > 0) {
+      applicationsHTML = `
+        <div class="table-container">
+          <table class="data-table">
+            <thead>
+              <tr>
+                <th>Application ID</th>
+                <th>Leave Type</th>
+                <th>From Date</th>
+                <th>To Date</th>
+                <th>Days</th>
+                <th>Reason</th>
+                <th>Status</th>
+                <th>Applied Date</th>
+                <th>Actions</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${applications.map(app => `
+                <tr>
+                  <td><span class="badge badge-primary">${app.ID || 'N/A'}</span></td>
+                  <td><span class="badge badge-info">${app.LeaveType || 'N/A'}</span></td>
+                  <td>${formatDate(app.FromDate)}</td>
+                  <td>${formatDate(app.ToDate)}</td>
+                  <td><span class="badge badge-secondary">${app.NoOfDays || 0}</span></td>
+                  <td>${app.Reason ? app.Reason.substring(0, 30) + (app.Reason.length > 30 ? '...' : '') : 'N/A'}</td>
+                  <td>
+                    <span class="badge ${app.Status === 'approved' ? 'badge-success' : app.Status === 'rejected' ? 'badge-danger' : 'badge-warning'}">
+                      ${(app.Status || 'pending').toUpperCase()}
+                    </span>
+                  </td>
+                  <td>${formatDate(app.AppliedDate)}</td>
+                  <td>
+                    <button class="btn btn-sm btn-info" onclick="viewStudentApplicationDetails('${app.id}')" title="View Details">
+                      <i class="fas fa-eye"></i>
+                    </button>
+                  </td>
+                </tr>
+              `).join('')}
+            </tbody>
+          </table>
+        </div>
+      `;
+    } else {
+      applicationsHTML = `
+        <div style="text-align: center; padding: 40px; color: #666;">
+          <i class="fas fa-calendar-times" style="font-size: 3rem; margin-bottom: 15px;"></i>
+          <h3>No Leave Applications Found</h3>
+          <p>You haven't submitted any leave applications yet.</p>
+          <p>Contact your administrator if you need to apply for leave.</p>
+        </div>
+      `;
+    }
+    
+    // Add summary stats
+    const totalLeaves = applications.length;
+    const approvedLeaves = applications.filter(app => app.Status === 'approved').length;
+    const pendingLeaves = applications.filter(app => app.Status === 'pending').length;
+    const rejectedLeaves = applications.filter(app => app.Status === 'rejected').length;
+    
+    contentDiv.innerHTML = `
+      <div class="card">
+        <div class="card-header">
+          <h2><i class="fas fa-history"></i> My Leave History</h2>
+          <div>
+            <span class="badge badge-info">Total: ${totalLeaves}</span>
+            <span class="badge badge-success">Approved: ${approvedLeaves}</span>
+            <span class="badge badge-warning">Pending: ${pendingLeaves}</span>
+            <span class="badge badge-danger">Rejected: ${rejectedLeaves}</span>
+          </div>
+        </div>
+        
+        <div class="student-info-box" style="margin-bottom: 20px;">
+          <div class="student-info-row">
+            <div class="info-item">
+              <span class="info-label">Student ID:</span>
+              <span class="info-value">${student.ID || 'N/A'}</span>
+            </div>
+            <div class="info-item">
+              <span class="info-label">Student Name:</span>
+              <span class="info-value">${student.Name || 'N/A'}</span>
+            </div>
+            <div class="info-item">
+              <span class="info-label">Category/Year:</span>
+              <span class="info-value">${student.Category || 'N/A'} - ${student.Year || 'N/A'}</span>
             </div>
           </div>
         </div>
-      `;
-      
-      loadStudentLeaveBalance();
-    }
+        
+        ${applicationsHTML}
+      </div>
+    `;
+    
+  } catch (error) {
+    console.error('Student leave history error:', error);
+    
+    document.getElementById('studentMainContent').innerHTML = `
+      <div class="alert alert-danger">
+        <i class="fas fa-exclamation-circle"></i>
+        <div>
+          <strong>Failed to Load Leave History</strong>
+          <p>Error: ${error.message}</p>
+          <button class="btn btn-primary" onclick="showStudentLeaveHistory()" style="margin-top: 10px;">
+            <i class="fas fa-sync-alt"></i> Try Again
+          </button>
+        </div>
+      </div>
+    `;
+  }
+}
 
+// Add function to view application details for student
+async function viewStudentApplicationDetails(applicationId) {
+  try {
+    const db = firebase.firestore();
+    
+    const appDoc = await db.collection('leaveApplications').doc(applicationId).get();
+    if (!appDoc.exists) {
+      showAlert('Application not found', 'danger');
+      return;
+    }
+    
+    const app = { id: appDoc.id, ...appDoc.data() };
+    
+    const modal = document.getElementById('operationModal');
+    modal.innerHTML = `
+      <div class="modal-content">
+        <div class="close-modal" onclick="closeModal()">&times;</div>
+        <h2><i class="fas fa-info-circle"></i> Application Details</h2>
+        <div style="padding: 20px; background: #f8f9fa; border-radius: 8px; margin: 20px 0;">
+          <h3 style="margin-bottom: 15px;">Application ID: ${app.ID}</h3>
+          
+          <div class="student-info-row">
+            <div class="info-item">
+              <span class="info-label">Leave Type:</span>
+              <span class="info-value">${app.LeaveType || 'N/A'}</span>
+            </div>
+            <div class="info-item">
+              <span class="info-label">Status:</span>
+              <span class="info-value badge ${app.Status === 'approved' ? 'badge-success' : app.Status === 'rejected' ? 'badge-danger' : 'badge-warning'}">
+                ${(app.Status || 'pending').toUpperCase()}
+              </span>
+            </div>
+          </div>
+          
+          <div class="student-info-row">
+            <div class="info-item">
+              <span class="info-label">From Date:</span>
+              <span class="info-value">${formatDate(app.FromDate)}</span>
+            </div>
+            <div class="info-item">
+              <span class="info-label">To Date:</span>
+              <span class="info-value">${formatDate(app.ToDate)}</span>
+            </div>
+            <div class="info-item">
+              <span class="info-label">Number of Days:</span>
+              <span class="info-value">${app.NoOfDays || 0}</span>
+            </div>
+          </div>
+          
+          <div class="student-info-row">
+            <div class="info-item">
+              <span class="info-label">Applied Date:</span>
+              <span class="info-value">${formatDate(app.AppliedDate)}</span>
+            </div>
+            <div class="info-item">
+              <span class="info-label">Semester:</span>
+              <span class="info-value">${app.Semester || 'N/A'}</span>
+            </div>
+          </div>
+          
+          <div style="margin-top: 15px;">
+            <strong>Reason:</strong>
+            <p style="background: white; padding: 10px; border-radius: 5px; margin-top: 5px;">${app.Reason || 'No reason provided'}</p>
+          </div>
+          
+          ${app.ApprovedDate ? `
+            <div style="margin-top: 15px;">
+              <strong>Approved/Rejected Date:</strong>
+              <p>${formatDate(app.ApprovedDate || app.RejectedDate)}</p>
+            </div>
+          ` : ''}
+          
+          ${app.ApprovedBy || app.RejectedBy ? `
+            <div style="margin-top: 15px;">
+              <strong>Processed By:</strong>
+              <p>${app.ApprovedBy || app.RejectedBy || 'N/A'}</p>
+            </div>
+          ` : ''}
+        </div>
+        
+        <div style="display: flex; gap: 10px;">
+          <button class="btn btn-secondary" onclick="closeModal()" style="flex: 1;">
+            Close
+          </button>
+        </div>
+      </div>
+    `;
+    modal.style.display = 'flex';
+    
+  } catch (error) {
+    console.error('View application error:', error);
+    showAlert('Failed to load application details: ' + error.message, 'danger');
+  }
+}
     // ==================== STUDENTS MANAGEMENT FUNCTIONS ====================
     async function showStudentsManagement() {
       try {
