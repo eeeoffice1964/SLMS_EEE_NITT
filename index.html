@@ -4750,7 +4750,7 @@ async function processBulkUpdate(event) {
   );
 }
 
-// ==================== BULK DELETE FUNCTIONS ====================
+// ==================== BULK DELETE FIXED VERSION ====================
 
 async function deleteSelectedStudents() {
   if (selectedStudents.size === 0) {
@@ -4759,58 +4759,339 @@ async function deleteSelectedStudents() {
   }
   
   const studentIds = Array.from(selectedStudents);
+  const studentCount = studentIds.length;
   
-  showConfirmationDialog(
-    "Confirm Bulk Delete",
-    `Are you sure you want to delete ${studentIds.length} student(s)? This action CANNOT be undone and will also delete their leave applications.`,
-    async () => {
-      try {
-        const db = firebase.firestore();
-        let successCount = 0;
-        let errorCount = 0;
-        
-        for (const studentId of studentIds) {
-          try {
-            // Find the student document
-            const studentSnapshot = await db.collection('students').where('ID', '==', studentId).get();
-            if (!studentSnapshot.empty) {
-              const studentDoc = studentSnapshot.docs[0];
-              
-              // Delete all leave applications for this student
-              const applicationsSnapshot = await db.collection('leaveApplications')
-                .where('StudentID', '==', studentId).get();
-              
-              const batch = db.batch();
-              applicationsSnapshot.docs.forEach(doc => {
-                batch.delete(doc.ref);
-              });
-              
-              // Delete the student
-              batch.delete(studentDoc.ref);
-              
-              await batch.commit();
-              successCount++;
-            }
-          } catch (err) {
-            console.error(`Error deleting student ${studentId}:`, err);
-            errorCount++;
-          }
-        }
-        
-        showAlert(`Bulk delete completed: ${successCount} deleted, ${errorCount} failed`, 
-                  errorCount === 0 ? 'success' : 'warning');
-        
-        selectedStudents.clear();
-        showStudentsManagement();
-        
-      } catch (error) {
-        console.error('Bulk delete error:', error);
-        showAlert('Failed to process bulk delete: ' + error.message, 'danger');
-      }
-    }
-  );
+  // Show detailed confirmation dialog
+  const modal = document.getElementById('operationModal');
+  modal.innerHTML = `
+    <div class="modal-content">
+      <div class="close-modal" onclick="closeModal()">&times;</div>
+      <h2><i class="fas fa-exclamation-triangle" style="color: var(--danger);"></i> Confirm Bulk Delete</h2>
+      
+      <div class="alert alert-danger">
+        <i class="fas fa-exclamation-circle"></i>
+        <div>
+          <strong>Warning:</strong> This action CANNOT be undone!
+        </div>
+      </div>
+      
+      <div style="background: #f8f9fa; padding: 20px; border-radius: 8px; margin: 20px 0;">
+        <h3 style="margin-bottom: 15px;">Selected Students (${studentCount})</h3>
+        <div style="max-height: 200px; overflow-y: auto;">
+          <ul style="list-style-type: none; padding: 0;">
+            ${studentIds.slice(0, 10).map(id => {
+              const student = allStudents.find(s => s.ID === id);
+              return `<li style="padding: 5px 0; border-bottom: 1px solid #dee2e6;">
+                <i class="fas fa-user-graduate" style="color: var(--danger); margin-right: 10px;"></i>
+                ${student ? `${student.ID} - ${student.Name}` : id}
+              </li>`;
+            }).join('')}
+            ${studentCount > 10 ? `<li style="padding: 5px 0; color: #666;">... and ${studentCount - 10} more</li>` : ''}
+          </ul>
+        </div>
+      </div>
+      
+      <p style="margin-bottom: 20px;">
+        <strong>This will also delete ALL leave applications for these students.</strong>
+      </p>
+      
+      <div style="display: flex; gap: 10px;">
+        <button class="btn btn-danger" style="flex: 1;" onclick="processBulkDelete()">
+          <i class="fas fa-trash"></i> Yes, Delete ${studentCount} Student(s)
+        </button>
+        <button class="btn btn-secondary" style="flex: 1;" onclick="closeModal()">
+          <i class="fas fa-times"></i> Cancel
+        </button>
+      </div>
+    </div>
+  `;
+  modal.style.display = 'flex';
 }
 
+async function processBulkDelete() {
+  closeModal(); // Close confirmation modal
+  
+  if (selectedStudents.size === 0) {
+    showAlert('No students selected', 'warning');
+    return;
+  }
+  
+  const studentIds = Array.from(selectedStudents);
+  const totalStudents = studentIds.length;
+  
+  // Show progress
+  showAlert(`Deleting ${totalStudents} students and their leave applications...`, 'info');
+  
+  try {
+    const db = firebase.firestore();
+    let successCount = 0;
+    let errorCount = 0;
+    const errors = [];
+    
+    for (let i = 0; i < studentIds.length; i++) {
+      const studentId = studentIds[i];
+      
+      try {
+        // Find the student document
+        const studentSnapshot = await db.collection('students').where('ID', '==', studentId).get();
+        
+        if (!studentSnapshot.empty) {
+          const studentDoc = studentSnapshot.docs[0];
+          const batch = db.batch();
+          
+          // Delete the student document
+          batch.delete(studentDoc.ref);
+          
+          // Find and delete all leave applications for this student
+          const applicationsSnapshot = await db.collection('leaveApplications')
+            .where('StudentID', '==', studentId)
+            .get();
+          
+          applicationsSnapshot.docs.forEach(doc => {
+            batch.delete(doc.ref);
+          });
+          
+          // Commit the batch
+          await batch.commit();
+          successCount++;
+          
+          // Update progress every 5 students
+          if ((i + 1) % 5 === 0 || i === studentIds.length - 1) {
+            console.log(`Progress: ${i + 1}/${totalStudents} students processed`);
+          }
+        } else {
+          errors.push(`Student ${studentId} not found`);
+          errorCount++;
+        }
+      } catch (err) {
+        console.error(`Error deleting student ${studentId}:`, err);
+        errors.push(`Student ${studentId}: ${err.message}`);
+        errorCount++;
+      }
+    }
+    
+    // Clear selection
+    selectedStudents.clear();
+    
+    // Show result
+    let resultMessage = `Bulk delete completed: ${successCount} deleted, ${errorCount} failed`;
+    if (errors.length > 0) {
+      console.error('Delete errors:', errors);
+      resultMessage += `. Check console for details.`;
+    }
+    
+    showAlert(resultMessage, errorCount === 0 ? 'success' : 'warning');
+    
+    // Refresh the student list
+    await showStudentsManagement();
+    
+  } catch (error) {
+    console.error('Bulk delete error:', error);
+    showAlert('Failed to process bulk delete: ' + error.message, 'danger');
+  }
+}
+
+// Also fix the bulk update button click handler
+function showBulkUpdateModal() {
+  if (selectedStudents.size === 0) {
+    showAlert('No students selected', 'warning');
+    return;
+  }
+  
+  const modal = document.getElementById('operationModal');
+  const studentIds = Array.from(selectedStudents);
+  
+  // Get unique values for dropdowns
+  const categories = [...new Set(allStudents.map(s => s.Category).filter(Boolean))];
+  const years = [...new Set(allStudents.map(s => s.Year).filter(Boolean))];
+  const semesters = [...new Set(allStudents.map(s => s.Semester).filter(Boolean))];
+  const specializations = [...new Set(allStudents.map(s => s.Specialization).filter(Boolean))];
+  
+  modal.innerHTML = `
+    <div class="modal-content">
+      <div class="close-modal" onclick="closeModal()">&times;</div>
+      <h2><i class="fas fa-edit"></i> Bulk Update Students</h2>
+      
+      <div class="alert alert-info">
+        <i class="fas fa-info-circle"></i>
+        <strong>${studentIds.length}</strong> student(s) selected for bulk update.
+        Leave fields empty to keep current values.
+      </div>
+      
+      <div style="background: #f8f9fa; padding: 10px; border-radius: 5px; margin-bottom: 15px; max-height: 100px; overflow-y: auto;">
+        <small><strong>Selected IDs:</strong> ${studentIds.slice(0, 5).join(', ')}${studentIds.length > 5 ? `, ... and ${studentIds.length - 5} more` : ''}</small>
+      </div>
+      
+      <form onsubmit="event.preventDefault(); processBulkUpdate();">
+        <div class="form-group">
+          <label>Category</label>
+          <select class="form-control" id="bulkCategory">
+            <option value="">-- Keep Current --</option>
+            ${categories.map(cat => `<option value="${cat}">${cat}</option>`).join('')}
+          </select>
+        </div>
+        
+        <div class="form-group">
+          <label>Year</label>
+          <select class="form-control" id="bulkYear">
+            <option value="">-- Keep Current --</option>
+            ${years.map(year => `<option value="${year}">${year}</option>`).join('')}
+          </select>
+        </div>
+        
+        <div class="form-group">
+          <label>Semester</label>
+          <select class="form-control" id="bulkSemester">
+            <option value="">-- Keep Current --</option>
+            ${semesters.map(sem => `<option value="${sem}">${sem}</option>`).join('')}
+          </select>
+        </div>
+        
+        <div class="form-group">
+          <label>Specialization</label>
+          <select class="form-control" id="bulkSpecialization">
+            <option value="">-- Keep Current --</option>
+            ${specializations.map(spec => `<option value="${spec}">${spec}</option>`).join('')}
+          </select>
+        </div>
+        
+        <div style="display: flex; gap: 10px; margin-top: 20px;">
+          <button type="submit" class="btn btn-success" style="flex: 1;">
+            <i class="fas fa-save"></i> Update ${studentIds.length} Student(s)
+          </button>
+          <button type="button" class="btn btn-secondary" style="flex: 1;" onclick="closeModal()">
+            Cancel
+          </button>
+        </div>
+      </form>
+    </div>
+  `;
+  modal.style.display = 'flex';
+}
+
+async function processBulkUpdate() {
+  if (selectedStudents.size === 0) {
+    showAlert('No students selected', 'warning');
+    closeModal();
+    return;
+  }
+  
+  const updates = {
+    Category: document.getElementById('bulkCategory')?.value || '',
+    Year: document.getElementById('bulkYear')?.value || '',
+    Semester: document.getElementById('bulkSemester')?.value || '',
+    Specialization: document.getElementById('bulkSpecialization')?.value || ''
+  };
+  
+  // Check if any updates selected
+  const hasUpdates = Object.values(updates).some(val => val !== '');
+  if (!hasUpdates) {
+    showAlert('Please select at least one field to update', 'warning');
+    return;
+  }
+  
+  const studentIds = Array.from(selectedStudents);
+  const totalStudents = studentIds.length;
+  
+  // Close modal and show progress
+  closeModal();
+  showAlert(`Updating ${totalStudents} students...`, 'info');
+  
+  try {
+    const db = firebase.firestore();
+    let successCount = 0;
+    let errorCount = 0;
+    
+    for (const studentId of studentIds) {
+      try {
+        // Find the student document
+        const studentSnapshot = await db.collection('students').where('ID', '==', studentId).get();
+        
+        if (!studentSnapshot.empty) {
+          const studentDoc = studentSnapshot.docs[0];
+          
+          // Build update object with only fields that have values
+          const updateData = {};
+          if (updates.Category) updateData.Category = updates.Category;
+          if (updates.Year) updateData.Year = updates.Year;
+          if (updates.Semester) updateData.Semester = updates.Semester;
+          if (updates.Specialization) updateData.Specialization = updates.Specialization;
+          
+          updateData.updatedAt = new Date().toISOString();
+          updateData.updatedBy = currentUser?.email || 'admin';
+          
+          await db.collection('students').doc(studentDoc.id).update(updateData);
+          successCount++;
+        } else {
+          errorCount++;
+        }
+      } catch (err) {
+        console.error(`Error updating student ${studentId}:`, err);
+        errorCount++;
+      }
+    }
+    
+    // Clear selection
+    selectedStudents.clear();
+    
+    showAlert(`Bulk update completed: ${successCount} updated, ${errorCount} failed`, 
+              errorCount === 0 ? 'success' : 'warning');
+    
+    // Refresh the student list
+    await showStudentsManagement();
+    
+  } catch (error) {
+    console.error('Bulk update error:', error);
+    showAlert('Failed to process bulk update: ' + error.message, 'danger');
+  }
+}
+
+// Also update the updateSelectionUI function to ensure buttons are clickable
+function updateSelectionUI() {
+  const selectedCount = selectedStudents.size;
+  const selectedElement = document.getElementById('selectedCount');
+  if (selectedElement) selectedElement.textContent = selectedCount;
+  
+  const bulkActions = document.getElementById('bulkActions');
+  if (bulkActions) {
+    if (selectedCount > 0) {
+      bulkActions.style.display = 'flex';
+      // Recreate buttons to ensure fresh event handlers
+      bulkActions.innerHTML = `
+        <button class="btn btn-sm btn-primary" onclick="showBulkUpdateModal()">
+          <i class="fas fa-edit"></i> Bulk Update (${selectedCount})
+        </button>
+        <button class="btn btn-sm btn-danger" onclick="deleteSelectedStudents()" style="margin-left: 10px;">
+          <i class="fas fa-trash"></i> Bulk Delete (${selectedCount})
+        </button>
+      `;
+    } else {
+      bulkActions.style.display = 'none';
+    }
+  }
+  
+  // Update select all checkbox in header
+  const selectAllCheckbox = document.getElementById('selectAllStudents');
+  if (selectAllCheckbox) {
+    const filteredStudents = filterStudents(allStudents, currentFilters);
+    const allFilteredSelected = filteredStudents.length > 0 && 
+      filteredStudents.every(student => selectedStudents.has(student.ID.toString()));
+    selectAllCheckbox.checked = allFilteredSelected;
+    selectAllCheckbox.indeterminate = !allFilteredSelected && 
+      filteredStudents.some(student => selectedStudents.has(student.ID.toString()));
+  }
+  
+  // Update select all visible checkbox
+  const selectAllVisible = document.getElementById('selectAllVisible');
+  if (selectAllVisible) {
+    const visibleCheckboxes = document.querySelectorAll('.student-checkbox');
+    const allVisibleChecked = visibleCheckboxes.length > 0 && 
+      Array.from(visibleCheckboxes).every(cb => cb.checked);
+    selectAllVisible.checked = allVisibleChecked;
+    selectAllVisible.indeterminate = !allVisibleChecked && 
+      Array.from(visibleCheckboxes).some(cb => cb.checked);
+  }
+}
 // ==================== SINGLE STUDENT OPERATIONS ====================
 
 // Add Student Modal
