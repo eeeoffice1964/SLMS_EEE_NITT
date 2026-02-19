@@ -1165,37 +1165,37 @@
 </head>
 <body>
   <!-- Login Screen -->
-  <div id="loginScreen" class="container">
-    <div class="login-card">
-      <h1><i class="fas fa-graduation-cap"></i> Leave Management System</h1>
-      <p style="color: #666; margin-bottom: 20px;">Version 5.0 | GitHub Pages + Firebase</p>
-      
-      <div id="offlineIndicator" style="display: none;" class="alert alert-warning">
-        <i class="fas fa-wifi-slash"></i> You are offline. Some features may be limited.
-      </div>
-      
-      <div class="role-selector">
-        <button onclick="showAdminLoginForm()" class="role-btn admin-btn">
-          <i class="fas fa-user-shield"></i> Admin Login
-        </button>
-        <button onclick="showStudentLoginForm()" class="role-btn student-btn">
-          <i class="fas fa-user-graduate"></i> Student Login
-        </button>
-      </div>
-      
-      <div style="margin-top: 20px; padding-top: 20px; border-top: 1px solid #eee;">
-        <p style="color: #666; font-size: 0.9rem;">
-          <i class="fas fa-shield-alt"></i> Secure Authentication System
-        </p>
-        <p style="color: #666; font-size: 0.8rem;">
-          <i class="fas fa-globe"></i> Hosted on GitHub Pages | Backend: Firebase
-        </p>
-        <p style="color: #666; font-size: 0.8rem; margin-top: 10px;">
-          <i class="fas fa-id-card"></i> Project ID: <span id="displayProjectId">Loading...</span>
-        </p>
-      </div>
+<div id="loginScreen" class="container">
+  <div class="login-card">
+    <h1><i class="fas fa-graduation-cap"></i> Leave Management System</h1>
+    <p style="color: #666; margin-bottom: 20px;">Version 5.0 | GitHub Pages + Firebase</p>
+    
+    <div id="offlineIndicator" style="display: none;" class="alert alert-warning">
+      <i class="fas fa-wifi-slash"></i> You are offline. Some features may be limited.
+    </div>
+    
+    <div class="role-selector">
+      <button onclick="showAdminLoginForm()" class="role-btn admin-btn">
+        <i class="fas fa-user-shield"></i> Admin Login
+      </button>
+      <button onclick="showStudentLoginForm()" class="role-btn student-btn">
+        <i class="fas fa-user-graduate"></i> Student Login
+      </button>
+    </div>
+    
+    <div style="margin-top: 20px; padding-top: 20px; border-top: 1px solid #eee;">
+      <p style="color: #666; font-size: 0.9rem;">
+        <i class="fas fa-shield-alt"></i> Secure Authentication System
+      </p>
+      <p style="color: #666; font-size: 0.8rem;">
+        <i class="fas fa-globe"></i> Hosted on GitHub Pages | Backend: Firebase
+      </p>
+      <p style="color: #666; font-size: 0.8rem; margin-top: 10px;">
+        <i class="fas fa-id-card"></i> Firebase: <span id="firebaseConfigStatus" class="badge badge-warning">Checking...</span>
+      </p>
     </div>
   </div>
+</div>
 
   <!-- Admin Dashboard -->
   <div id="adminDashboard" class="dashboard-container">
@@ -1385,25 +1385,91 @@
     // This will be used to display the project ID throughout the application
     const PROJECT_ID = GITHUB_PROJECT_ID || localStorage.getItem('firebaseProjectId') || '';
 
-    // Display the project ID on the login screen
-    function displayStoredProjectId() {
-      const projectIdElement = document.getElementById('displayProjectId');
-      const headerProjectIdElement = document.getElementById('headerProjectId');
-      
-      if (PROJECT_ID) {
-        if (projectIdElement) projectIdElement.textContent = PROJECT_ID;
-        if (headerProjectIdElement) headerProjectIdElement.textContent = PROJECT_ID;
-        
-        // Store in localStorage for backup
-        localStorage.setItem('firebaseProjectId', PROJECT_ID);
-        
-        return PROJECT_ID;
-      } else {
-        if (projectIdElement) projectIdElement.textContent = 'Not configured';
-        if (headerProjectIdElement) headerProjectIdElement.textContent = 'Not configured';
-        return null;
+   // Display Firebase configuration status on login screen
+function displayFirebaseConfigStatus() {
+  const statusElement = document.getElementById('firebaseConfigStatus');
+  
+  // Check if Firebase is configured (either in localStorage or from hardcoded project ID)
+  const hasLocalConfig = localStorage.getItem('firebaseConfig') !== null;
+  const hasProjectId = GITHUB_PROJECT_ID || localStorage.getItem('firebaseProjectId');
+  
+  if (firebase.apps.length > 0) {
+    // Firebase is actually initialized and connected
+    statusElement.textContent = 'CONFIGURED ✓';
+    statusElement.className = 'badge badge-success';
+  } else if (hasLocalConfig || hasProjectId) {
+    // Configuration exists but not yet initialized
+    statusElement.textContent = 'CONFIGURED';
+    statusElement.className = 'badge badge-info';
+  } else {
+    // No configuration found
+    statusElement.textContent = 'NOT CONFIGURED';
+    statusElement.className = 'badge badge-danger';
+  }
+}
+
+// Update the initialization to call this function
+document.addEventListener('DOMContentLoaded', function() {
+  updateOnlineStatus();
+  displayFirebaseConfigStatus(); // Call this instead of displayStoredProjectId
+  autoLoadFirebaseConfig();
+  
+  document.addEventListener('keydown', function(e) {
+    if (e.ctrlKey && e.key === 'r') {
+      e.preventDefault();
+      if (currentRole === 'admin') {
+        refreshAdminData();
+      } else if (currentRole === 'student') {
+        refreshStudentData();
       }
     }
+    
+    if (e.key === 'Escape') {
+      closeModal();
+    }
+  });
+});
+
+// Also update the autoLoadFirebaseConfig to refresh the status
+async function autoLoadFirebaseConfig() {
+  try {
+    if (firebase.apps.length > 0) return;
+
+    // Display initial status
+    displayFirebaseConfigStatus();
+    
+    if (!PROJECT_ID) {
+      console.log('No Firebase project ID configured. Please set GITHUB_PROJECT_ID in the code.');
+      showAlert('Firebase Project ID not configured. Please contact administrator.', 'warning');
+      displayFirebaseConfigStatus();
+      return;
+    }
+
+    // First try localStorage
+    const savedConfig = localStorage.getItem('firebaseConfig');
+    if (savedConfig) {
+      try {
+        const config = JSON.parse(savedConfig);
+        if (config.projectId === PROJECT_ID) {
+          initializeFirebase(config);
+          console.log('Firebase initialized from localStorage');
+          displayFirebaseConfigStatus(); // Update status after initialization
+          return;
+        }
+      } catch (e) {
+        console.log('Failed to load from localStorage:', e);
+      }
+    }
+
+    // If no localStorage config, try to load from Firestore
+    await attemptToLoadFirebaseConfig(PROJECT_ID);
+    displayFirebaseConfigStatus(); // Update status after attempt
+
+  } catch (e) {
+    console.log("Auto load failed:", e);
+    displayFirebaseConfigStatus(); // Update status on failure
+  }
+}
 
     // ==================== OFFLINE DETECTION ====================
     function updateOnlineStatus() {
