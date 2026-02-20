@@ -1374,101 +1374,272 @@
       localStorage.setItem('googleAppsScriptUrl', GOOGLE_APPS_SCRIPT_URL);
     }
 
-    // ==================== FIREBASE INITIALIZATION VIA APPS SCRIPT BRIDGE ====================
-    async function initializeFirebaseFromAppsScript() {
+   // ==================== FIREBASE INITIALIZATION VIA APPS SCRIPT BRIDGE ====================
+// Your Google Apps Script URL - HARDCODED for security
+const GOOGLE_APPS_SCRIPT_URL = 'https://script.google.com/macros/s/YOUR_SCRIPT_ID_HERE/exec'; // ← REPLACE THIS
+
+// Track initialization state
+let firebaseInitialized = false;
+let firebaseInitPromise = null;
+
+async function initializeFirebaseFromAppsScript() {
+  // Prevent multiple simultaneous initialization attempts
+  if (firebaseInitPromise) {
+    return firebaseInitPromise;
+  }
+  
+  firebaseInitPromise = new Promise(async (resolve) => {
+    try {
+      console.log('🔍 Fetching Firebase config from Apps Script bridge...');
+      console.log('URL:', GOOGLE_APPS_SCRIPT_URL);
+      
+      // Try multiple approaches to fetch config
+      let config = null;
+      let fetchError = null;
+      
+      // Approach 1: Standard fetch with timeout
       try {
-        console.log('Fetching Firebase config from Apps Script bridge...');
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 10000); // 10 second timeout
         
         const response = await fetch(GOOGLE_APPS_SCRIPT_URL, {
           method: 'GET',
           mode: 'cors',
           headers: {
             'Content-Type': 'application/json',
-          }
+          },
+          signal: controller.signal
         });
         
-        if (!response.ok) {
-          throw new Error(`HTTP error! status: ${response.status}`);
+        clearTimeout(timeoutId);
+        
+        if (response.ok) {
+          const data = await response.json();
+          if (!data.error) {
+            config = data;
+            console.log('✅ Config fetched via standard fetch');
+          } else {
+            fetchError = data.error;
+          }
         }
-        
-        const config = await response.json();
-        
-        if (config.error) {
-          throw new Error(config.error);
+      } catch (e) {
+        console.warn('Standard fetch failed:', e.message);
+        fetchError = e.message;
+      }
+      
+      // Approach 2: Try JSONP if standard fetch fails (for CORS issues)
+      if (!config) {
+        try {
+          console.log('Trying JSONP approach...');
+          config = await fetchConfigWithJSONP();
+          console.log('✅ Config fetched via JSONP');
+        } catch (e) {
+          console.warn('JSONP failed:', e.message);
         }
-        
-        // Validate config
-        if (!config.apiKey || !config.projectId) {
-          throw new Error('Invalid configuration received from Apps Script');
-        }
-        
+      }
+      
+      // If we got config, save and initialize
+      if (config) {
         // Save to localStorage as cache
-        localStorage.setItem('firebaseConfig', JSON.stringify(config));
-        localStorage.setItem('fb_apiKey', config.apiKey);
-        localStorage.setItem('fb_authDomain', config.authDomain);
-        localStorage.setItem('fb_projectId', config.projectId);
-        localStorage.setItem('fb_storageBucket', config.storageBucket);
-        localStorage.setItem('fb_messagingSenderId', config.messagingSenderId);
-        localStorage.setItem('fb_appId', config.appId);
-        if (config.measurementId) localStorage.setItem('fb_measurementId', config.measurementId);
+        try {
+          localStorage.setItem('firebaseConfig', JSON.stringify(config));
+          localStorage.setItem('fb_apiKey', config.apiKey || '');
+          localStorage.setItem('fb_authDomain', config.authDomain || '');
+          localStorage.setItem('fb_projectId', config.projectId || '');
+          localStorage.setItem('fb_storageBucket', config.storageBucket || '');
+          localStorage.setItem('fb_messagingSenderId', config.messagingSenderId || '');
+          localStorage.setItem('fb_appId', config.appId || '');
+          if (config.measurementId) localStorage.setItem('fb_measurementId', config.measurementId);
+          localStorage.setItem('configTimestamp', Date.now().toString());
+          console.log('✅ Config saved to localStorage');
+        } catch (e) {
+          console.warn('Failed to save to localStorage:', e);
+        }
         
         // Initialize Firebase
-        return initializeFirebase(config);
-        
-      } catch (error) {
-        console.error('Failed to fetch config from Apps Script:', error);
-        
-        // Fallback to localStorage cache
-        const cachedConfig = localStorage.getItem('firebaseConfig');
-        if (cachedConfig) {
-          console.log('Using cached Firebase configuration');
-          return initializeFirebase(JSON.parse(cachedConfig));
-        }
-        
-        return { success: false, error: error.message };
-      }
-    }
-
-    function initializeFirebase(config) {
-      try {
-        if (firebase.apps.length > 0) {
-          return { success: true, message: 'Firebase already initialized' };
-        }
-        
-        firebase.initializeApp(config);
-        window.db = firebase.firestore();
-        window.auth = firebase.auth();
-        
-        firebase.firestore().enablePersistence()
-          .catch((err) => {
-            console.warn('Firebase persistence error:', err);
-          });
-        
-        firebaseInitialized = true;
-        updateFirebaseStatusBadges(true);
-        
-        return { success: true };
-      } catch (error) {
-        console.error('Firebase initialization error:', error);
-        updateFirebaseStatusBadges(false);
-        return { success: false, error: error.message };
-      }
-    }
-
-    function updateFirebaseStatusBadges(isConnected) {
-      const adminBadge = document.getElementById('firebaseStatusBadge');
-      const studentBadge = document.getElementById('studentFirebaseStatus');
-      
-      if (adminBadge) {
-        adminBadge.textContent = isConnected ? 'FIREBASE CONNECTED' : 'FIREBASE DISCONNECTED';
-        adminBadge.className = isConnected ? 'badge badge-success' : 'badge badge-danger';
+        const result = initializeFirebase(config);
+        resolve(result);
+        return;
       }
       
-      if (studentBadge) {
-        studentBadge.textContent = isConnected ? 'FIREBASE CONNECTED' : 'FIREBASE DISCONNECTED';
-        studentBadge.className = isConnected ? 'badge badge-success' : 'badge badge-danger';
+      // If all fetch attempts failed, try localStorage cache
+      console.warn('All fetch attempts failed, trying localStorage cache...');
+      const cachedConfig = localStorage.getItem('firebaseConfig');
+      if (cachedConfig) {
+        try {
+          config = JSON.parse(cachedConfig);
+          console.log('✅ Using cached config from localStorage');
+          const result = initializeFirebase(config);
+          resolve(result);
+          return;
+        } catch (e) {
+          console.error('Failed to parse cached config:', e);
+        }
+      }
+      
+      // If nothing works, resolve with failure
+      console.error('❌ All initialization methods failed');
+      updateFirebaseStatusBadges(false);
+      resolve({ 
+        success: false, 
+        error: fetchError || 'Failed to load Firebase configuration' 
+      });
+      
+    } catch (error) {
+      console.error('❌ Fatal initialization error:', error);
+      updateFirebaseStatusBadges(false);
+      resolve({ success: false, error: error.message });
+    }
+  });
+  
+  return firebaseInitPromise;
+}
+
+// JSONP fallback for CORS issues
+function fetchConfigWithJSONP() {
+  return new Promise((resolve, reject) => {
+    const callbackName = 'jsonp_callback_' + Math.round(100000 * Math.random());
+    const timeoutId = setTimeout(() => {
+      window[callbackName] = null;
+      document.head.removeChild(script);
+      reject(new Error('JSONP timeout'));
+    }, 10000);
+    
+    window[callbackName] = function(data) {
+      clearTimeout(timeoutId);
+      window[callbackName] = null;
+      document.head.removeChild(script);
+      resolve(data);
+    };
+    
+    const script = document.createElement('script');
+    script.src = GOOGLE_APPS_SCRIPT_URL + '?callback=' + callbackName;
+    script.onerror = function() {
+      clearTimeout(timeoutId);
+      window[callbackName] = null;
+      document.head.removeChild(script);
+      reject(new Error('JSONP script load error'));
+    };
+    document.head.appendChild(script);
+  });
+}
+
+function initializeFirebase(config) {
+  try {
+    if (firebase.apps.length > 0) {
+      return { success: true, message: 'Firebase already initialized' };
+    }
+    
+    // Validate config
+    if (!config || !config.apiKey || !config.projectId) {
+      throw new Error('Invalid Firebase configuration');
+    }
+    
+    console.log('🚀 Initializing Firebase with config:', {
+      apiKey: config.apiKey ? '***' : 'missing',
+      authDomain: config.authDomain,
+      projectId: config.projectId
+    });
+    
+    firebase.initializeApp(config);
+    window.db = firebase.firestore();
+    window.auth = firebase.auth();
+    
+    // Enable persistence for offline support
+    firebase.firestore().enablePersistence()
+      .then(() => console.log('✅ Firestore persistence enabled'))
+      .catch((err) => {
+        if (err.code === 'failed-precondition') {
+          console.warn('Multiple tabs open, persistence disabled');
+        } else if (err.code === 'unimplemented') {
+          console.warn('Browser doesn\'t support persistence');
+        }
+      });
+    
+    firebaseInitialized = true;
+    updateFirebaseStatusBadges(true);
+    
+    // Test connection
+    testFirebaseConnection().catch(console.warn);
+    
+    return { success: true };
+    
+  } catch (error) {
+    console.error('❌ Firebase initialization error:', error);
+    updateFirebaseStatusBadges(false);
+    return { success: false, error: error.message };
+  }
+}
+
+// Test Firebase connection
+async function testFirebaseConnection() {
+  if (!firebase.apps.length) return false;
+  
+  try {
+    const testDoc = await firebase.firestore().collection('_test_').doc('connection').get();
+    console.log('✅ Firebase connection test successful');
+    updateFirebaseStatusBadges(true);
+    return true;
+  } catch (error) {
+    console.warn('⚠️ Firebase connection test failed:', error.message);
+    updateFirebaseStatusBadges(false);
+    return false;
+  }
+}
+
+function updateFirebaseStatusBadges(isConnected) {
+  const adminBadge = document.getElementById('firebaseStatusBadge');
+  const studentBadge = document.getElementById('studentFirebaseStatus');
+  
+  const statusText = isConnected ? 'FIREBASE CONNECTED' : 'FIREBASE DISCONNECTED';
+  const statusClass = isConnected ? 'badge-success' : 'badge-danger';
+  
+  if (adminBadge) {
+    adminBadge.textContent = statusText;
+    adminBadge.className = `badge ${statusClass}`;
+  }
+  
+  if (studentBadge) {
+    studentBadge.textContent = statusText;
+    studentBadge.className = `badge ${statusClass}`;
+  }
+}
+
+// Update the DOMContentLoaded event handler
+document.addEventListener('DOMContentLoaded', function() {
+  console.log('📱 Page loaded, initializing...');
+  
+  // Try to initialize Firebase from Apps Script
+  initializeFirebaseFromAppsScript().then(result => {
+    if (result.success) {
+      console.log('✅ Firebase initialized successfully');
+      // Load configurations from Firestore
+      loadConfigurationsFromFirestore().catch(console.error);
+    } else {
+      console.warn('⚠️ Firebase initialization failed:', result.error);
+      showAlert('Firebase not configured. Using default login.', 'warning');
+    }
+  }).catch(error => {
+    console.error('❌ Initialization error:', error);
+    showAlert('Failed to initialize. Using default login.', 'warning');
+  });
+  
+  // Keyboard shortcuts
+  document.addEventListener('keydown', function(e) {
+    if (e.ctrlKey && e.key === 'r') {
+      e.preventDefault();
+      if (currentRole === 'admin') {
+        refreshAdminData();
+      } else if (currentRole === 'student') {
+        refreshStudentData();
       }
     }
+    
+    if (e.key === 'Escape') {
+      closeModal();
+    }
+  });
+});
 
     // ==================== CONFIGURATION STORAGE FUNCTIONS ====================
 
@@ -2879,134 +3050,149 @@ service cloud.firestore {
       modal.style.display = 'flex';
     }
 
-    async function adminLogin(event) {
-      event.preventDefault();
-      
-      const email = document.getElementById('adminEmail').value;
-      const password = document.getElementById('adminPassword').value;
-      
-      const loginBtn = document.getElementById('adminLoginBtn');
-      const originalText = loginBtn.innerHTML;
-      loginBtn.innerHTML = '<div class="loading-spinner"></div> Verifying...';
-      loginBtn.disabled = true;
-      
-      try {
-        // Check if Firebase is configured
-        const isFirebaseConfigured = localStorage.getItem('firebaseConfig') !== null;
+   async function adminLogin(event) {
+  event.preventDefault();
+  
+  const email = document.getElementById('adminEmail').value;
+  const password = document.getElementById('adminPassword').value;
+  
+  const loginBtn = document.getElementById('adminLoginBtn');
+  const originalText = loginBtn.innerHTML;
+  loginBtn.innerHTML = '<div class="loading-spinner"></div> Verifying...';
+  loginBtn.disabled = true;
+  
+  try {
+    // Check if Firebase is configured AND initialized
+    const isFirebaseConfigured = localStorage.getItem('firebaseConfig') !== null && firebase.apps.length > 0;
+    
+    if (!isFirebaseConfigured) {
+      // First-time login with default credentials
+      if (email === DEFAULT_ADMIN_EMAIL && password === DEFAULT_ADMIN_PASSWORD) {
+        currentUser = {
+          uid: 'default-admin',
+          email: DEFAULT_ADMIN_EMAIL,
+          name: 'Administrator',
+          role: 'admin'
+        };
+        currentRole = 'admin';
         
-        if (!isFirebaseConfigured) {
-          // First-time login with default credentials
-          if (email === DEFAULT_ADMIN_EMAIL && password === DEFAULT_ADMIN_PASSWORD) {
-            currentUser = {
-              uid: 'default-admin',
-              email: DEFAULT_ADMIN_EMAIL,
-              name: 'Administrator',
-              role: 'admin'
-            };
-            currentRole = 'admin';
-            
-            showAlert('Welcome, Administrator! Please configure Firebase to continue.', 'info');
-            closeModal();
-            showAdminDashboard();
-            
-            // Automatically show Firebase config panel
-            setTimeout(() => {
-              showFirebaseConfigPanel();
-            }, 500);
-            
-            return;
-          } else {
-            showAlert('Invalid credentials. First-time login requires default credentials.', 'danger');
-            loginBtn.innerHTML = originalText;
-            loginBtn.disabled = false;
-            return;
-          }
-        }
+        showAlert('Welcome, Administrator! Please configure Firebase to continue.', 'info');
+        closeModal();
+        showAdminDashboard();
         
-        // Firebase is configured - use Firebase Auth
-        if (firebase.apps.length === 0) {
-          showAlert('Firebase configuration error. Please reconfigure.', 'warning');
-          loginBtn.innerHTML = originalText;
-          loginBtn.disabled = false;
-          return;
-        }
+        // Automatically show Firebase config panel
+        setTimeout(() => {
+          showFirebaseConfigPanel();
+        }, 500);
         
-        // Attempt Firebase Authentication
-        const userCredential = await firebase.auth().signInWithEmailAndPassword(email, password);
-        
-        // Verify this is an admin account
-        const adminDoc = await firebase.firestore().collection('admins').doc(userCredential.user.uid).get();
-        
-        if (adminDoc.exists) {
-          // Admin exists - login successful
-          currentUser = {
-            uid: userCredential.user.uid,
-            email: userCredential.user.email,
-            name: adminDoc.data().name || 'Administrator',
-            role: 'admin'
-          };
-          currentRole = 'admin';
-          
-          showAlert('Welcome back, Administrator!', 'success');
-          closeModal();
-          showAdminDashboard();
-          startAutoRefresh();
-        } else {
-          // User exists but not in admins collection - create admin record
-          await firebase.firestore().collection('admins').doc(userCredential.user.uid).set({
-            email: email,
-            name: email.split('@')[0],
-            role: 'admin',
-            createdAt: new Date().toISOString(),
-            updatedAt: new Date().toISOString()
-          });
-          
-          currentUser = {
-            uid: userCredential.user.uid,
-            email: email,
-            name: email.split('@')[0],
-            role: 'admin'
-          };
-          currentRole = 'admin';
-          
-          showAlert('Admin account created! Welcome!', 'success');
-          closeModal();
-          showAdminDashboard();
-          startAutoRefresh();
-        }
-        
-      } catch (error) {
-        console.error('Admin login error:', error);
-        
-        // Handle specific Firebase Auth errors
-        switch(error.code) {
-          case 'auth/user-not-found':
-            showAlert('No account found with this email. Please contact administrator.', 'danger');
-            break;
-          case 'auth/wrong-password':
-            showAlert('Incorrect password. Please try again or use "Forgot Password".', 'danger');
-            break;
-          case 'auth/invalid-email':
-            showAlert('Invalid email format.', 'danger');
-            break;
-          case 'auth/user-disabled':
-            showAlert('This account has been disabled. Contact administrator.', 'danger');
-            break;
-          case 'auth/too-many-requests':
-            showAlert('Too many failed attempts. Please try again later.', 'danger');
-            break;
-          case 'auth/network-request-failed':
-            showAlert('Network error. Please check your connection.', 'danger');
-            break;
-          default:
-            showAlert('Login failed: ' + error.message, 'danger');
-        }
-      } finally {
+        return;
+      } else {
+        showAlert('Invalid credentials. First-time login requires default credentials.', 'danger');
         loginBtn.innerHTML = originalText;
         loginBtn.disabled = false;
+        return;
       }
     }
-
+    
+    // Firebase is configured - use Firebase Auth
+    try {
+      // Attempt Firebase Authentication
+      const userCredential = await firebase.auth().signInWithEmailAndPassword(email, password);
+      
+      // Verify this is an admin account
+      const adminDoc = await firebase.firestore().collection('admins').doc(userCredential.user.uid).get();
+      
+      if (adminDoc.exists) {
+        // Admin exists - login successful
+        currentUser = {
+          uid: userCredential.user.uid,
+          email: userCredential.user.email,
+          name: adminDoc.data().name || 'Administrator',
+          role: 'admin'
+        };
+        currentRole = 'admin';
+        
+        showAlert('Welcome back, Administrator!', 'success');
+        closeModal();
+        showAdminDashboard();
+        startAutoRefresh();
+      } else {
+        // User exists but not in admins collection - create admin record
+        await firebase.firestore().collection('admins').doc(userCredential.user.uid).set({
+          email: email,
+          name: email.split('@')[0],
+          role: 'admin',
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString()
+        });
+        
+        currentUser = {
+          uid: userCredential.user.uid,
+          email: email,
+          name: email.split('@')[0],
+          role: 'admin'
+        };
+        currentRole = 'admin';
+        
+        showAlert('Admin account created! Welcome!', 'success');
+        closeModal();
+        showAdminDashboard();
+        startAutoRefresh();
+      }
+      
+    } catch (authError) {
+      console.error('Firebase Auth error:', authError);
+      
+      // If Firebase Auth fails, try default admin as fallback
+      if (email === DEFAULT_ADMIN_EMAIL && password === DEFAULT_ADMIN_PASSWORD) {
+        currentUser = {
+          uid: 'default-admin',
+          email: DEFAULT_ADMIN_EMAIL,
+          name: 'Administrator',
+          role: 'admin'
+        };
+        currentRole = 'admin';
+        
+        showAlert('Using default admin mode. Firebase Auth failed: ' + authError.message, 'warning');
+        closeModal();
+        showAdminDashboard();
+        return;
+      }
+      
+      throw authError;
+    }
+    
+  } catch (error) {
+    console.error('Admin login error:', error);
+    
+    // Handle specific Firebase Auth errors
+    switch(error.code) {
+      case 'auth/user-not-found':
+        showAlert('No account found with this email. Please contact administrator.', 'danger');
+        break;
+      case 'auth/wrong-password':
+        showAlert('Incorrect password. Please try again or use "Forgot Password".', 'danger');
+        break;
+      case 'auth/invalid-email':
+        showAlert('Invalid email format.', 'danger');
+        break;
+      case 'auth/user-disabled':
+        showAlert('This account has been disabled. Contact administrator.', 'danger');
+        break;
+      case 'auth/too-many-requests':
+        showAlert('Too many failed attempts. Please try again later.', 'danger');
+        break;
+      case 'auth/network-request-failed':
+        showAlert('Network error. Please check your connection.', 'danger');
+        break;
+      default:
+        showAlert('Login failed: ' + error.message, 'danger');
+    }
+  } finally {
+    loginBtn.innerHTML = originalText;
+    loginBtn.disabled = false;
+  }
+}
     // ==================== FORGOT PASSWORD FUNCTIONS ====================
     function showForgotPasswordModal() {
       const modal = document.getElementById('operationModal');
