@@ -1336,6 +1336,101 @@
   <!-- Modal for Operations -->
   <div id="operationModal" class="modal"></div>
 
+    <script>
+    // ==================== INSERT FIX HERE - RIGHT AFTER SCRIPT TAG ====================
+    (function() {
+      console.log('🔧 CRITICAL FIX: Defining login functions immediately');
+      
+      window.showAdminLoginForm = function() {
+        console.log('Admin login clicked - FIXED VERSION');
+        let modal = document.getElementById('operationModal');
+        if (!modal) {
+          modal = document.createElement('div');
+          modal.id = 'operationModal';
+          modal.className = 'modal';
+          document.body.appendChild(modal);
+        }
+        modal.innerHTML = `
+          <div class="modal-content">
+            <div class="close-modal" onclick="closeModal()">&times;</div>
+            <h2><i class="fas fa-user-shield"></i> Admin Login</h2>
+            <form onsubmit="adminLogin(event)">
+              <div class="form-group">
+                <label>Email</label>
+                <input type="email" class="form-control" id="adminEmail" required 
+                       placeholder="Enter your registered email">
+              </div>
+              <div class="form-group">
+                <label>Password</label>
+                <input type="password" class="form-control" id="adminPassword" required 
+                       placeholder="Enter your password">
+              </div>
+              <button type="submit" class="btn btn-primary" style="width: 100%;" id="adminLoginBtn">
+                <i class="fas fa-sign-in-alt"></i> Login
+              </button>
+            </form>
+            <div style="margin-top: 15px; text-align: center;">
+              <button class="btn btn-secondary" onclick="closeModal()">Cancel</button>
+            </div>
+          </div>
+        `;
+        modal.style.display = 'flex';
+      };
+
+      window.showStudentLoginForm = function() {
+        console.log('Student login clicked - FIXED VERSION');
+        let modal = document.getElementById('operationModal');
+        if (!modal) {
+          modal = document.createElement('div');
+          modal.id = 'operationModal';
+          modal.className = 'modal';
+          document.body.appendChild(modal);
+        }
+        modal.innerHTML = `
+          <div class="modal-content">
+            <div class="close-modal" onclick="closeModal()">&times;</div>
+            <h2><i class="fas fa-user-graduate"></i> Student Login</h2>
+            <form onsubmit="studentLogin(event)">
+              <div class="form-group">
+                <label>Student ID / Roll Number</label>
+                <input type="text" class="form-control" id="studentIdInput" placeholder="Enter your student ID" required>
+              </div>
+              <button type="submit" class="btn btn-primary" style="width: 100%; margin-top: 20px;" id="studentLoginBtn">
+                <i class="fas fa-sign-in-alt"></i> Login
+              </button>
+            </form>
+            <div style="margin-top: 15px; text-align: center;">
+              <button class="btn btn-secondary" onclick="closeModal()">Cancel</button>
+            </div>
+          </div>
+        `;
+        modal.style.display = 'flex';
+      };
+
+      window.closeModal = function() {
+        const modal = document.getElementById('operationModal');
+        if (modal) modal.style.display = 'none';
+      };
+
+      window.adminLogin = function(event) {
+        event.preventDefault();
+        alert('Admin login - Please configure Firebase first');
+      };
+
+      window.studentLogin = function(event) {
+        event.preventDefault();
+        const studentId = document.getElementById('studentIdInput').value;
+        alert('Student login for ID: ' + studentId + ' - Please configure Firebase first');
+      };
+
+      console.log('✅ CRITICAL FIX APPLIED');
+    })();
+
+    // ==================== GLOBAL VARIABLES ====================
+    // Your existing code continues from here...
+    let firebaseInitialized = false;
+    let currentUser = null;
+    // ... rest of your code
   <script>
     // ==================== AUTO-DEBUGGING SYSTEM ====================
     // This will automatically detect and report issues
